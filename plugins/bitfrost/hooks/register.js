@@ -619,13 +619,21 @@ function stopAgent($, st, why) {
   return st.stopping
 }
 
+// Lead-session permission modes that count as auto for subagents.
+// 'auto' is the classic auto-accept mode; 'acceptEdits' auto-accepts edits;
+// any bypass variant skips permissions engine-wide.
+const PARENT_AUTO_MODES = new Set(['auto', 'acceptEdits', 'bypassPermissions', 'bypass'])
+
 const newState = (def, o) => ({
   def,
   effort: o.effort ?? null,
   title: o.title ?? null,
   name: o.name ?? null,
   parentMode: o.parentMode ?? null,
-  auto: o.parentMode === 'auto',
+  // Anything but the default ask-each-time mode counts as auto: acceptEdits
+  // auto-accepts, and bypass skips permissions engine-wide, so asking here
+  // would only add friction the lead session already waived.
+  auto: PARENT_AUTO_MODES.has(o.parentMode ?? ''),
   task: o.task ?? null,
   lastMessage: o.lastMessage ?? null, // the lead's latest follow-up, for the auto mode review
   asked: new Set(),
@@ -1969,7 +1977,7 @@ async function* replayStep($, e, next, st, ctl) {
         st.acked.add(ev.inputId)
         yield say('⚠ A queued message was dropped before it started.')
       } else if (ev.type === 'question_asked') {
-        if (st.parentMode !== 'auto') {
+        if (!PARENT_AUTO_MODES.has(st.parentMode ?? '')) {
           for (const line of yield* askUserQuestions($, st, ev, nextIndex, next.signal)) yield say(line)
           continue
         }
