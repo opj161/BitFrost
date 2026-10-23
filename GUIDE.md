@@ -33,6 +33,19 @@ through a `zcode` executable on PATH. A custom `providers.zcode.dir` or
 
 Then run `bitfrost setup zcode` once. Without it, GLM can't ask you for permission and is refused instead.
 
+### Grok Build
+
+Install Grok Build (`curl -fsSL https://x.ai/cli/install.sh | bash`) and sign in once:
+
+```sh
+grok login
+```
+
+Nothing else to do: BitFrost offers Grok automatically when it is installed and signed in, like Codex.
+```
+
+Grok serves its own models (e.g. `grok-4.7`, `grok-4.6`) with per-model reasoning effort. BitFrost asks in Grok's ask mode and keeps Grok's own system prompt, adding your task instructions as session rules. Follow-up messages queue until the active turn ends; interrupt to redirect sooner.
+
 ### opencode, Oh My Pi, Gemini CLI, Crush
 
 Sign in to the app first (`opencode auth login`, `omp`, `gemini`, or `crush login` and Crush's own provider setup). Then open the config screen (`bitfrost config`), turn the app on and pick its models. Or do the same by hand in `~/.config/bitfrost/config.json`:
@@ -50,7 +63,7 @@ Sign in to the app first (`opencode auth login`, `omp`, `gemini`, or `crush logi
 
 opencode, Oh My Pi and Crush need `models`: only the models listed there are offered. `*` works as a wildcard. Gemini CLI offers all its models unless you name ones to skip.
 
-Anthropic models are never offered through these apps. Any other model they list can be, GPT, GLM and Gemini included. If Codex, ZCode or Gemini CLI also offers that model, theirs keeps the short name, like glm, and the copy is named after its model id, like opencode-go-glm-5-3.
+Anthropic models are never offered through these apps. Any other model they list can be, GPT, GLM and Gemini included. If Codex, ZCode, Gemini CLI or Grok Build also offers that model, theirs keeps the short name, like glm, and the copy is named after its model id, like opencode-go-glm-5-3.
 
 ### Custom Claude profiles
 
@@ -84,7 +97,7 @@ If the interface can't open on your platform, BitFrost prints help and tells you
 
 ### How do I turn a model on or off?
 
-On the Models page, pick an app, then pick a model. Apps serving their own company's models, like Codex, ZCode and Gemini CLI, offer every model unless you turn them off, which adds the model to `providers.<app>.disabled`:
+On the Models page, pick an app, then pick a model. Apps serving their own company's models, like Codex, ZCode, Gemini CLI and Grok Build, offer every model unless you turn them off, which adds the model to `providers.<app>.disabled`:
 
 ```json
 { "providers": { "codex": { "disabled": ["gpt-5-mini"] } } }
@@ -181,7 +194,7 @@ Yes. Ask "what is glm doing?". Claude checks BitFrost for the current step, rece
 
 ### Can I message a subagent while it works?
 
-Yes, through Claude. Codex models take the message inside their current turn. GLM and opencode models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
+Yes, through Claude. Codex models take the message inside their current turn. GLM, opencode and Grok Build models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
 
 ### Can I resume a subagent after restarting Claude?
 

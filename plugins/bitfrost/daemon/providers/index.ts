@@ -7,7 +7,7 @@
 import type { ProviderFactory } from '../provider.ts'
 import { codexProvider } from './codex.ts'
 import { zcodeProvider } from './zcode.ts'
-import { geminiProvider, ompProvider, opencodeProvider } from './acp-agents.ts'
+import { geminiProvider, grokProvider, ompProvider, opencodeProvider } from './acp-agents.ts'
 import { crushProvider } from './crush.ts'
 
-export const PROVIDERS: ProviderFactory[] = [codexProvider, zcodeProvider, opencodeProvider, ompProvider, geminiProvider, crushProvider]
+export const PROVIDERS: ProviderFactory[] = [codexProvider, zcodeProvider, opencodeProvider, grokProvider, ompProvider, geminiProvider, crushProvider]

@@ -27,7 +27,8 @@ export const FILE_KINDS = new Set(['edit', 'delete', 'move'])
 export const blankTool = (): ToolCall => ({ kind: 'other', title: '', name: null, rawInput: {}, rawOutput: undefined, content: [], locations: [], status: 'pending', started: false, done: false })
 export const objectOf = (v: Json): Json => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
 const str = (v: Json): string | undefined => (typeof v === 'string' && v ? v : undefined)
-export const isSelect = (category: string) => (o: Json) => o?.category === category && o.type === 'select'
+export const isSelect = (category: string) => (o: Json) =>
+  o?.type === 'select' && (o.category === category || (!o.category && category === 'model'))
 
 export function choicesOf(option: Json): Json[] {
   return (option.options ?? []).flatMap((o: Json) => (Array.isArray(o.options) ? o.options : [o]))
@@ -159,8 +160,11 @@ function clip(text: string, lines: number): string {
 }
 
 // Choose "once" options because bitfrost limits task grants to exact actions.
+// Fall back to any same-outcome kind: some agents only offer allow_always /
+// reject_always. `cancelled` stays reserved for real turn cancellation.
 export function permissionOutcome(options: Json[], decision: Decision): Json {
-  const o = options.find((x) => x?.kind === (decision === 'deny' ? 'reject_once' : 'allow_once'))
+  const want = decision === 'deny' ? 'reject' : 'allow'
+  const o = options.find((x) => x?.kind === `${want}_once`) ?? options.find((x) => typeof x?.kind === 'string' && x.kind.startsWith(`${want}_`))
   return o ? { outcome: 'selected', optionId: o.optionId } : { outcome: 'cancelled' }
 }
 

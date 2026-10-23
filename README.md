@@ -131,11 +131,12 @@ Use any mix of these.
 | Harness                                 | Models  | Turned on |
 |-----------------------------------------|---------|---|
 | Codex (CLI, or the ChatGPT desktop app) | GPT     | automatically, when installed and signed in |
+| Grok Build                              | Grok    | automatically, when installed and signed in |
 | ZCode                                   | GLM     | automatically, when installed and signed in, plus one setup step |
 | opencode, Oh My Pi, Crush               | Various | only once you turn them on in the config screen or `~/.config/bitfrost/config.json` |
 | Gemini CLI                              | Gemini  | only once you turn it on, the same way |
 
-Codex and ZCode are fully supported. The others are experimental.
+Codex and ZCode are fully supported. The others, including Grok Build, are experimental.
 
 opencode, Oh My Pi and Crush also need a `models` list naming the models you want. Setup for each app is in [the guide](GUIDE.md#setup). The config screen sets this up too, so you don't need to edit the file by hand.
 

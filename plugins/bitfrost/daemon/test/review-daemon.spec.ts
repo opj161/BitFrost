@@ -33,7 +33,7 @@ function setup(t: any) {
   const configDir = path.join(root, 'config', 'bitfrost'), logFile = path.join(root, 'sent.jsonl')
   for (const dir of [profile, configDir, dataDir]) fs.mkdirSync(dir, { recursive: true })
   fs.chmodSync(dataDir, 0o755)
-  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ allowedProfiles: [profile], retention: { eventsDays: 1, messagesDays: 1 }, providers: { codex: { bin: path.join(HERE, 'fake-codex.mjs') }, zcode: { enabled: false } } }))
+  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ allowedProfiles: [profile], retention: { eventsDays: 1, messagesDays: 1 }, providers: { codex: { bin: path.join(HERE, 'fake-codex.mjs') }, zcode: { enabled: false }, grok: { enabled: false } } }))
   const env = { ...process.env, BITFROST_RUNTIME_DIR: runDir, BITFROST_DATA_DIR: dataDir, XDG_CONFIG_HOME: path.join(root, 'config'), XDG_CACHE_HOME: path.join(root, 'cache'), BITFROST_TEST_LOG: logFile }
   delete env.BITFROST_INSIDE
   const children: ChildProcess[] = []

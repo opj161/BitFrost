@@ -21,6 +21,7 @@ namespace bf {
             {"oh-my-pi", "Oh My Pi"},
             {"omp", "Oh My Pi"},
             {"gemini", "Gemini CLI"},
+            {"grok", "Grok Build"},
             {"crush", "Crush"}
         };
         for (auto [key, name] : names) {

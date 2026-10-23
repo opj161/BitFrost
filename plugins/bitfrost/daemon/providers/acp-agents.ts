@@ -38,6 +38,30 @@ export const OPENCODE: AcpAgentSpec = {
   note: "Serves many companies' models, named provider/model. Denying a request ends opencode's turn. An agent's own `permission` block in the user's opencode config still applies on top.",
 }
 
+// Grok Build's native ACP host. It uses the logged-in grok account and native
+// tool/skill loop; we do not call a model API or replace Grok's system prompt.
+export const GROK: AcpAgentSpec = {
+  id: 'grok',
+  displayName: 'Grok Build',
+  vendor: 'xAI',
+  binary: 'grok',
+  args: ['agent', '--no-leader', 'stdio'],
+  loginCommand: 'grok login',
+  // On automatically when installed and signed in, like Codex and ZCode.
+  // Missing binary → provider absent; not signed in → status names `grok login`.
+  optIn: false,
+  // Conservative until approvals are validated with the real Grok CLI.
+  gates: 'destructive',
+  // The ACP schema mandates bare strings for select values; verified live on
+  // grok 1.0.67 (tagged { value } is rejected with -32602).
+  sessionRules: true,
+  probeModelEfforts: true,
+  nativeInterject: false, // enable via providers.grok.experimentalInterject after real CLI validation
+  // Verified live on grok 1.0.67: prompt totals in response _meta, no usage_update.
+  promptUsageMeta: true,
+  note: 'Uses the real Grok Build ACP agent and the existing grok login. Follow-up messages queue until the active turn ends; interrupt to redirect sooner. Grok native subagents remain governed by its configuration.',
+}
+
 export const OMP: AcpAgentSpec = {
   id: 'omp',
   displayName: 'Oh My Pi',
@@ -96,11 +120,15 @@ function acpFactory(spec: AcpAgentSpec): ProviderFactory {
         args.push(spec.configOverlay.flag, file)
       }
       const models = Array.isArray(env.config.models) ? env.config.models.map(String) : null
-      return new AcpProvider(spec, { bin, args, env: spec.env ?? {} }, { log: env.log, record: env.recorder(spec.id), runDir: env.runDir, models })
+      const effective = spec.id === 'grok'
+        ? { ...spec, nativeInterject: env.config.experimentalInterject === true }
+        : spec
+      return new AcpProvider(effective, { bin, args, env: spec.env ?? {} }, { log: env.log, record: env.recorder(spec.id), runDir: env.runDir, models })
     },
   }
 }
 
 export const opencodeProvider = acpFactory(OPENCODE)
+export const grokProvider = acpFactory(GROK)
 export const ompProvider = acpFactory(OMP)
 export const geminiProvider = acpFactory(GEMINI)

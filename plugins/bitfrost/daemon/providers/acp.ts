@@ -37,9 +37,26 @@ export type AcpAgentSpec = {
   env?: Record<string, string>
   configOverlay?: { flag: string; file: string; body: unknown }
   loginCommand: string
-  optIn: true
+  // False means on unless turned off (like Codex): offered as soon as the
+  // binary is found and signed in. True means off unless turned on.
+  optIn: boolean
   gates: ProviderCapabilities['gates']
   note: string
+  // The ACP schema mandates bare strings for select config values
+  // (SessionConfigOptionValue flattens to a top-level string on the wire);
+  // every known server (opencode, Grok 1.0.67) rejects the tagged shape.
+  // Grok appends these as rules to its native system prompt, rather than seeing
+  // them as another user text block.
+  sessionRules?: boolean
+  // Survey all models' effort selectors in the isolated discovery session.
+  probeModelEfforts?: boolean
+  // Experimental: Grok's x.ai/interject adds text to a running turn at a safe point.
+  nativeInterject?: boolean
+  // Read prompt-wide usage totals from the prompt response's vendor _meta
+  // (e.g. Grok's inputTokens/outputTokens/cachedReadTokens/usage.modelCalls).
+  // Only set this for agents verified live to report that shape; the branch
+  // is skipped otherwise so other agents can never gain phantom usage rows.
+  promptUsageMeta?: boolean
 }
 
 export type AcpLaunch = { bin: string; args: string[]; env: Record<string, string> }
@@ -77,6 +94,9 @@ type State = {
   drifted: boolean
   dead: boolean
   turn: Turn | null
+  // Bumped on every turn end so a late interject ack can't be mistaken
+  // for steering the next turn (Grok may start a fallback prompt when idle).
+  epoch: number
   grants: Set<string>
 }
 
@@ -113,7 +133,7 @@ export class AcpProvider implements Provider {
     this.id = spec.id
     this.displayName = spec.displayName
     if (spec.vendor) this.vendor = spec.vendor
-    this.capabilities = { steer: false, autoReview: false, questions: true, gates: spec.gates }
+    this.capabilities = { steer: !!spec.nativeInterject, autoReview: false, questions: true, gates: spec.gates }
     this.location = launch.bin
     this.spec = spec
     this.launch = launch
@@ -230,9 +250,12 @@ export class AcpProvider implements Provider {
     return new Error(`${this.displayName} could not start a session: ${e.message}. If it needs signing in, run \`${this.spec.loginCommand}\` in a terminal, then try again.`)
   }
 
-  private async newSession(cwd: string, session?: Session): Promise<Json> {
+  private async newSession(cwd: string, session?: Session, rules?: string): Promise<Json> {
+    const meta = this.spec.sessionRules
+      ? { yoloMode: false, autoMode: false, ...(rules ? { rules } : {}) }
+      : null
     try {
-      return await this.request('session/new', { cwd, mcpServers: [] }, session)
+      return await this.request('session/new', { cwd, mcpServers: [], ...(meta ? { _meta: meta } : {}) }, session)
     } catch (e) {
       throw this.explain(e)
     }
@@ -300,7 +323,7 @@ export class AcpProvider implements Provider {
     for (const choice of choicesOf(picker)) {
       const value = String(choice.value)
       const isDefault = value === picker.currentValue
-      if (isDefault || !this.allow?.some((pattern) => globMatch(pattern, value))) {
+      if (isDefault || !(this.spec.probeModelEfforts || this.allow?.some((pattern) => globMatch(pattern, value)))) {
         out.push(this.harnessModel(choice, isDefault ? startLevel : null, isDefault))
         continue
       }
@@ -357,7 +380,7 @@ export class AcpProvider implements Provider {
 
   private async spawn(session: Session, req: SpawnRequest): Promise<string> {
     await this.start()
-    const r = await this.newSession(req.cwd, session)
+    const r = await this.newSession(req.cwd, session, req.developerInstructions)
     let modelOption: string | null
     try {
       modelOption = await this.chooseModel(r.sessionId, r, req.model, req.effort, session)
@@ -374,10 +397,11 @@ export class AcpProvider implements Provider {
       model: req.model,
       modelOption,
       canAsk: !!req.canAskUser,
-      intro: req.developerInstructions ?? null,
+      intro: this.spec.sessionRules ? null : (req.developerInstructions ?? null),
       drifted: false,
       dead: false,
       turn: null,
+      epoch: 0,
       grants: new Set(),
     }
     this.states.set(id, st)
@@ -389,9 +413,36 @@ export class AcpProvider implements Provider {
     return id
   }
 
-  async sendInput(session: Session, text: string): Promise<'started' | 'queued'> {
+  async sendInput(session: Session, text: string): Promise<'started' | 'queued' | 'steered'> {
     const st = this.stateOf(session)
     if (!st || st.dead) throw new Error(`${this.displayName} can't reopen this session: the app has restarted since this task began`)
+    if (st.turn && this.spec.nativeInterject) {
+      // Grok's nonstandard extension admits text to its running agent loop.
+      // The acknowledgement means "queued at a safe point", not "model saw it":
+      // when idle Grok turns a late interjection into a standalone prompt
+      // itself, so only report 'steered' while the same turn is still tracked
+      // here under the same epoch. Anything else falls back to the session
+      // queue (exactly once — never start a turn here, or the text would be
+      // delivered twice: once now and once when the queued input drains).
+      // Note: this transport unwraps the JSON-RPC result envelope, so a real
+      // {"result":{"status":"queued"}} ack arrives here as {status:'queued'}.
+      const turnAtSend = st.turn
+      const epochAtSend = st.epoch
+      try {
+        const reply = await this.request('x.ai/interject', {
+          sessionId: st.acpId, text, interjectionId: randomUUID(),
+        }, session)
+        if (reply?.status === 'queued' && st.turn === turnAtSend && st.epoch === epochAtSend && !turnAtSend.cancelled) {
+          return 'steered'
+        }
+        if (reply?.status !== 'queued') this.log(`${this.id}: interject returned unexpected status ${String(reply?.status)}`)
+        else this.log(`${this.id}: interject raced turn end; queuing follow-up`)
+      } catch (e) {
+        this.log(`${this.id}: interject unavailable; queuing follow-up (${(e as Error).message})`)
+      }
+      session.queueInput(this, text)
+      return 'queued'
+    }
     if (st.turn) { session.queueInput(this, text); return 'queued' }
     this.runTurn(st, text)
     return 'started'
@@ -406,9 +457,12 @@ export class AcpProvider implements Provider {
     await this.start()
     if (!this.agentCaps.loadSession) throw new Error(`${this.displayName} can't reopen this session: the agent does not advertise loadSession`)
     if (!ref?.acpSessionId) throw new Error(`${this.displayName} can't reopen this session: no native session id was saved`)
-    const r = await this.request('session/load', { sessionId: ref.acpSessionId, cwd: session.info.cwd, mcpServers: [] }, session)
+    // Grok re-applies yolo/auto from load metadata on reconnect; rules are
+    // creation-only by design so they are deliberately omitted here.
+    const meta = this.spec.sessionRules ? { yoloMode: false, autoMode: false } : null
+    const r = await this.request('session/load', { sessionId: ref.acpSessionId, cwd: session.info.cwd, mcpServers: [], ...(meta ? { _meta: meta } : {}) }, session)
     const modelOption = await this.chooseModel(ref.acpSessionId, r, session.info.model, session.info.effort ?? undefined, session)
-    const st: State = { session, acpId: ref.acpSessionId, cwd: session.info.cwd, model: session.info.model, modelOption, canAsk: !!ref.canAsk, intro: null, drifted: false, dead: false, turn: null, grants: new Set() }
+    const st: State = { session, acpId: ref.acpSessionId, cwd: session.info.cwd, model: session.info.model, modelOption, canAsk: !!ref.canAsk, intro: null, drifted: false, dead: false, turn: null, epoch: 0, grants: new Set() }
     this.states.set(session.info.id, st)
     this.byAcpId.set(st.acpId, st)
   }
@@ -504,6 +558,19 @@ export class AcpProvider implements Provider {
     const out = r.usage?.outputTokens
     if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
       billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 } })
+    else if (this.spec.promptUsageMeta) {
+      // Grok reports prompt-wide usage totals in the prompt response _meta
+      // (verified live on 1.0.67) instead of usage_update events. The top-level
+      // inputTokens/outputTokens/cachedReadTokens are the LAST MODEL CALL only;
+      // bill the whole-prompt totals from _meta.usage instead.
+      const meta = r?._meta ?? {}
+      const totals = meta.usage ?? {}
+      const mi = Number(totals.inputTokens), mo = Number(totals.outputTokens), mc = Number(totals.cachedReadTokens)
+      if ((Number.isFinite(mi) || Number.isFinite(mo) || Number.isFinite(mc)) && (mi || mo || mc)) {
+        const bill = { inputTokens: mi || 0, outputTokens: mo || 0, cachedInputTokens: mc || 0, requests: Number(totals.modelCalls) || 1 }
+        st.session.push({ type: 'usage', requestId: turn.id, inputTokens: bill.inputTokens, outputTokens: bill.outputTokens, cachedInputTokens: bill.cachedInputTokens, billing: bill })
+      }
+    }
     const stop = r.stopReason
     const status =
       turn.wrongModel || (error && !turn.cancelled) ? 'failed'
@@ -516,6 +583,7 @@ export class AcpProvider implements Provider {
       ? `${this.displayName} switched to ${turn.wrongModel} instead of ${st.model}; stopped it`
       : (denied?.reason ?? error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
     st.turn = null
+    st.epoch++
     st.session.push({ type: 'turn_completed', turnId: turn.id, status, reason, finalText: turn.finalText, ...(why ? { error: why } : {}) })
   }
 

@@ -14,7 +14,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AcpProvider, type AcpAgentSpec, type AcpOptions } from '../providers/acp.ts'
 import { claudeTool, unifiedDiff, vendorOf } from '../providers/acp-shapes.ts'
-import { geminiProvider, ompProvider, opencodeProvider } from '../providers/acp-agents.ts'
+import { geminiProvider, GROK, ompProvider, opencodeProvider } from '../providers/acp-agents.ts'
 import { Session } from '../session.ts'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
@@ -750,4 +750,105 @@ test('stop_timeout cancels the target load RPC and leaves another running sessio
     await secondFailure
     assert.equal(first.info.state, 'running')
   } finally { run.stop() }
+})
+
+test('Grok native ACP lists models and model-specific efforts with bare config strings', async () => {
+  const run = fake('grok.json', GROK)
+  try {
+    assert.strictEqual(GROK.optIn, false)
+    assert.strictEqual(GROK.promptUsageMeta, true)
+    assert.strictEqual(GROK.nativeInterject, false)
+    const models = await run.provider.listModels()
+    assert.deepStrictEqual(models.map((m) => m.model), ['grok-4.7-build-fast', 'grok-4.6', 'grok-4.5', 'grok-4.7'])
+    assert.ok(models.every((m) => m.provider === 'xAI'))
+    assert.deepStrictEqual(models.find((m) => m.model === 'grok-4.6')?.efforts, ['xhigh', 'high', 'medium', 'low'])
+    const messages = run.sent()
+    assert.deepStrictEqual(messages.find((m) => m.method === 'session/new').params._meta,
+      { yoloMode: false, autoMode: false })
+    const switches = messages.filter((m) => m.method === 'session/set_config_option')
+    assert.deepStrictEqual(switches.map((m) => m.params.value), ['grok-4.7-build-fast', 'grok-4.6', 'grok-4.5'])
+    assert.ok(!messages.some((m) => m.method === 'session/prompt'))
+  } finally { run.stop() }
+})
+
+test('Grok ACP keeps its system prompt and receives Claude instructions as session rules', async () => {
+  const run = fake('grok.json', GROK)
+  try {
+    const session = await spawn(run, 'grok-4.6', 'low')
+    await done(session)
+    const sent = run.sent()
+    const created = sent.find((m) => m.method === 'session/new')
+    assert.deepStrictEqual(created.params._meta,
+      { yoloMode: false, autoMode: false, rules: INSTRUCTIONS })
+    assert.deepStrictEqual(sent.filter((m) => m.method === 'session/set_config_option').map((m) => [m.params.configId, m.params.value]),
+      [['model', 'grok-4.6'], ['reasoning_effort', 'low']])
+    const prompt = sent.find((m) => m.method === 'session/prompt')
+    assert.deepStrictEqual(prompt.params.prompt, [{ type: 'text', text: 'List the files.' }])
+    assert.ok(session.events.some((e) => e.type === 'turn_completed' && e.status === 'completed'))
+    const usage = session.events.find((e) => e.type === 'usage')
+    assert.deepStrictEqual(usage?.billing, { inputTokens: 1000, outputTokens: 50, cachedInputTokens: 800, requests: 3 })
+  } finally { run.stop() }
+})
+
+test('Grok ACP bills prompt totals from the prompt response _meta', async () => {
+  const run = fake('grok.json', GROK)
+  try {
+    const session = await spawn(run, 'grok-4.7', 'low')
+    await done(session)
+    const usage = session.events.find((e) => e.type === 'usage')
+    // Whole-prompt totals from _meta.usage, not last-call sibling fields.
+    assert.deepStrictEqual(usage?.billing, { inputTokens: 1000, outputTokens: 50, cachedInputTokens: 800, requests: 3 })
+  } finally { run.stop() }
+})
+
+test('Grok ACP re-asserts ask mode on session/load without resending rules', async () => {
+  const run = fake('grok.json', GROK)
+  try {
+    const s = newSession(run.dir, 'grok-4.7')
+    s.nativeRef = { acpSessionId: 'grok_ses_1', canAsk: true }
+    await run.provider.attach(s, s.nativeRef)
+    const load = run.sent().find((m) => m.method === 'session/load')
+    assert.deepStrictEqual(load.params._meta, { yoloMode: false, autoMode: false })
+    assert.ok(!('rules' in (load.params._meta ?? {})))
+  } finally { run.stop() }
+})
+
+
+test('experimental Grok extension steers through x.ai/interject rather than a second session/prompt', async () => {
+  const run = fake('grok.json', { ...GROK, nativeInterject: true })
+  try {
+    const session = newSession(run.dir, 'grok-4.7')
+    await run.provider.spawnSession(session, { model: 'grok-4.7', cwd: run.dir, prompt: 'First task.' })
+    assert.deepStrictEqual(run.provider.capabilities.steer, true)
+    // The fake completes its first turn rapidly; force an active stub turn here
+    // so we can verify the adapter's wire protocol without timing assumptions.
+    const state = [...(run.provider as any).states.values()][0]
+    state.turn = { id: 't', cancelled: false }
+    const receipt = await run.provider.sendInput(session, 'Additional constraint.')
+    assert.strictEqual(receipt, 'steered')
+    const messages = run.sent()
+    assert.strictEqual(messages.filter((m) => m.method === 'session/prompt').length, 1)
+    const injected = messages.filter((m) => m.method === 'x.ai/interject')
+    assert.strictEqual(injected.length, 1)
+    assert.strictEqual(injected[0].params.sessionId, 'grok_ses_1')
+    assert.strictEqual(injected[0].params.text, 'Additional constraint.')
+    assert.ok(typeof injected[0].params.interjectionId === 'string')
+  } finally { run.stop() }
+})
+
+test('a late Grok interject ack racing turn end falls back to queued, never steered', async () => {
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE, 'fixtures', 'acp', 'grok.json'), 'utf8'))
+  scenario.interjectDelay = 200
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-acp-grok-race-'))
+  const file = path.join(dir, 'scenario.json')
+  fs.writeFileSync(file, JSON.stringify(scenario))
+  const run = fake(file, { ...GROK, nativeInterject: true })
+  try {
+    const session = newSession(run.dir, 'grok-4.7')
+    await run.provider.spawnSession(session, { model: 'grok-4.7', cwd: run.dir, prompt: 'First task.' })
+    // Turn is active here; the delayed ack lands after the fake ends it.
+    const receipt = await run.provider.sendInput(session, 'Late constraint.')
+    assert.strictEqual(receipt, 'queued')
+    await until('the fallback prompt', () => run.sent().filter((m) => m.method === 'session/prompt').length >= 2)
+  } finally { run.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })

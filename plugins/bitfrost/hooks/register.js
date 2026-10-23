@@ -349,8 +349,10 @@ async function reviewVerdict($, st, approval) {
     (st.lastMessage ? `<latest_message>\n${st.lastMessage.slice(0, 2000)}\n</latest_message>\n\n` : '') +
     `<action>\nThe agent (${st.def.displayName}) wants to ${approval.title}.\n${approval.detail ?? ''}${input}\n</action>`
   const r = await $.model.complete({ model: REVIEW_MODEL, system: REVIEW_SYSTEM, prompt, maxTokens: 200, effort: 'low', timeoutMs: REVIEW_TIMEOUT_MS })
-  if (!r.isAnswered) return null
-  const m = r.text.trim().match(/^(ALLOW|BLOCK)\b[\s:.-]*([\s\S]*)$/i)
+  // Newer engine surfaces return the bare text; older ones return { isAnswered, text }.
+  const text = typeof r === 'string' ? r : r?.isAnswered ? r.text : null
+  if (!text) return null
+  const m = text.trim().match(/^(ALLOW|BLOCK)\b[\s:.-]*([\s\S]*)$/i)
   if (!m) return null
   return { decision: m[1].toUpperCase() === 'ALLOW' ? 'allow' : 'deny', why: m[2].trim().split('\n')[0] }
 }

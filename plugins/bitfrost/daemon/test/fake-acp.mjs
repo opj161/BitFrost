@@ -97,12 +97,21 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: msg.id, ...answer })
     }
     case 'session/set_config_option': {
+      // Bare strings only, mirroring the ACP schema and every known server
+      // (opencode rejects non-strings; Grok 1.0.67 rejects tagged values).
+      if (typeof p.value !== 'string') return send({ id: msg.id, error: { code: -32602, message: 'data did not match any variant of untagged enum SessionConfigOptionValue' } })
       const answer = setOption(p.configId, p.value)
       if (answer.result && options.find((o) => o.id === p.configId)?.category === 'model') {
         send({ method: 'session/update', params: { sessionId: p.sessionId, update: { sessionUpdate: 'config_option_update', configOptions: options } } })
       }
       return send({ id: msg.id, ...answer })
     }
+    case 'x.ai/interject':
+      if (scenario.interject) {
+        if (scenario.interjectDelay) return setTimeout(() => send({ id: msg.id, result: { status: 'queued' } }), scenario.interjectDelay)
+        return send({ id: msg.id, result: { status: 'queued' } })
+      }
+      return send({ id: msg.id, error: { code: -32601, message: 'unknown extension' } })
     case 'session/set_model':
     case 'session/close':
     case 'session/delete':

@@ -33,7 +33,7 @@ let leaseId = ''
 
 const goodConfig = (codex: Record<string, unknown> = {}) => ({
   allowedProfiles: [profile],
-  providers: { codex: { bin: FAKE, ...codex }, zcode: { enabled: false } },
+  providers: { codex: { bin: FAKE, ...codex }, zcode: { enabled: false }, grok: { enabled: false } },
 })
 const writeConfig = (body: unknown) => fs.writeFileSync(configFile, typeof body === 'string' ? body : JSON.stringify(body))
 

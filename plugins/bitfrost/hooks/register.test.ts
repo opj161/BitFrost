@@ -549,6 +549,29 @@ test('a permission request reaches the user and the decision is posted back', { 
   expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode allowed GPT-6-Sol to run npm run build')
 })
 
+test('auto mode review also accepts a bare-string model reply', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.fake.reviewReply = 'BLOCK\nrisky delete'
+  w.fake.queue.push({
+    events: [
+      { type: 'command_started', seq: 1, itemId: 'cmd-9', command: 'rm -rf /tmp/x', summary: 'delete scratch' },
+      { type: 'approval_requested', seq: 2, approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' },
+      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
+    ],
+    items: {},
+    approvals: [{ approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' }],
+  })
+  const b = await spawn($, 'clean scratch', 'auto')
+  w.rows[b.agentId] = [{ role: 'user', text: 'clean scratch', toolUses: [] }]
+  w.api[b.agentId] = []
+
+  const s = await step($, b.agentId, 0)
+  const allowed = await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })
+  expect(w.posts['/sessions/fx-1/approvals/appr-9']).toEqual([{ decision: 'deny', by: 'auto mode' }])
+  expect(allowed).toEqual({ result: { stdout: '', stderr: 'Not run: permission was denied.', interrupted: false } })
+})
+
 test('a lease renewal picks up models the helper adds or drops mid-session', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)

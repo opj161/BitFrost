@@ -1,0 +1,30 @@
+{
+  "_note": "Simulated Grok ACP matching grok 1.0.67 live wire: bare config strings, 4 models, xhigh efforts. interject:true simulates a supporting server; the shipped 1.0.67 --no-leader stdio answers -32601. NOT a recording of the real CLI.",
+  "interject": true,
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": { "loadSession": true, "sessionCapabilities": { "list": {}, "resume": {}, "close": {} } },
+    "agentInfo": { "name": "grok", "version": "test" }
+  },
+  "newSession": { "result": {
+    "sessionId": "grok_ses_1",
+    "configOptions": [
+      { "id": "model", "name": "Model", "type": "select", "category": "model", "currentValue": "grok-4.7",
+        "options": [ { "value": "grok-4.7-build-fast", "name": "Grok 4.7 Fast" }, { "value": "grok-4.6", "name": "Grok 4.6" }, { "value": "grok-4.5", "name": "Grok 4.5" }, { "value": "grok-4.7", "name": "Grok 4.7" } ] },
+      { "id": "reasoning_effort", "name": "Reasoning Effort", "type": "select", "category": "thought_level", "currentValue": "high",
+        "options": [ { "value": "xhigh", "name": "Extra High" }, { "value": "high", "name": "High" }, { "value": "medium", "name": "Medium" }, { "value": "low", "name": "Low" } ] }
+    ]
+  } },
+  "levels": {
+    "grok-4.7-build-fast": { "id": "reasoning_effort", "name": "Reasoning Effort", "type": "select", "category": "thought_level", "currentValue": "high",
+      "options": [ { "value": "xhigh", "name": "Extra High" }, { "value": "high", "name": "High" }, { "value": "medium", "name": "Medium" }, { "value": "low", "name": "Low" } ] },
+    "grok-4.6": { "id": "reasoning_effort", "name": "Reasoning Effort", "type": "select", "category": "thought_level", "currentValue": "high",
+      "options": [ { "value": "xhigh", "name": "Extra High" }, { "value": "high", "name": "High" }, { "value": "medium", "name": "Medium" }, { "value": "low", "name": "Low" } ] },
+    "grok-4.5": { "id": "reasoning_effort", "name": "Reasoning Effort", "type": "select", "category": "thought_level", "currentValue": "high",
+      "options": [ { "value": "high", "name": "High" }, { "value": "medium", "name": "Medium" }, { "value": "low", "name": "Low" } ] }
+  },
+  "turns": [
+    [ { "update": { "sessionUpdate": "agent_message_chunk", "content": { "type": "text", "text": "Grok completed." } } },
+      { "respond": { "stopReason": "end_turn", "_meta": { "modelId": "grok-4.7", "inputTokens": 400, "outputTokens": 20, "cachedReadTokens": 300, "usage": { "inputTokens": 1000, "outputTokens": 50, "cachedReadTokens": 800, "modelCalls": 3 } } } } ]
+  ]
+}

@@ -352,7 +352,7 @@ function serve() {
       const hint = agents.length
         ? undefined
         : !providers.size
-          ? `No app found: install and sign in to Codex or ZCode, or turn on ${or(PROVIDERS.filter((f) => f.optIn).map((f) => f.displayName))} in ${CONFIG}.`
+          ? `No app found: install and sign in to Codex, ZCode or Grok Build, or turn on ${or(PROVIDERS.filter((f) => f.optIn).map((f) => f.displayName))} in ${CONFIG}.`
           : unlisted.length
             ? `${unlisted.join(' ')} (in ${CONFIG})`
             : `None of the models from ${[...providers.values()].map((p) => p.displayName).join(', ')} can be offered; check providers.<app>.models in ${CONFIG} and the log at ${LOG}.`
