@@ -31,7 +31,7 @@ export const isShellTool = (t: ToolCall): boolean => (t.kind === 'other' || !t.k
 export const objectOf = (v: Json): Json => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
 const str = (v: Json): string | undefined => (typeof v === 'string' && v ? v : undefined)
 export const isSelect = (category: string) => (o: Json) =>
-  o?.type === 'select' && (o.category === category || (!o.category && category === 'model'))
+  o?.type === 'select' && (o.category === category || (!o.category && o.id === 'model' && category === 'model'))
 
 export function choicesOf(option: Json): Json[] {
   return (option.options ?? []).flatMap((o: Json) => (Array.isArray(o.options) ? o.options : [o]))

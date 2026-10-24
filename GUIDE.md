@@ -42,7 +42,6 @@ grok login
 ```
 
 Nothing else to do: BitFrost offers Grok automatically when it is installed and signed in, like Codex.
-```
 
 Grok serves its own models (e.g. `grok-4.7`, `grok-4.6`) with per-model reasoning effort. BitFrost asks in Grok's ask mode and keeps Grok's own system prompt, adding your task instructions as session rules. Follow-up messages queue until the active turn ends; interrupt to redirect sooner.
 

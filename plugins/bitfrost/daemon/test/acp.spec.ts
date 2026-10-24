@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { AcpProvider, type AcpAgentSpec, type AcpOptions } from '../providers/acp.ts'
-import { claudeTool, unifiedDiff, vendorOf } from '../providers/acp-shapes.ts'
+import { claudeTool, isSelect, unifiedDiff, vendorOf } from '../providers/acp-shapes.ts'
 import { geminiProvider, GROK, ompProvider, opencodeProvider } from '../providers/acp-agents.ts'
 import { Session } from '../session.ts'
 
@@ -926,4 +926,13 @@ test('long thinking is released line by line while the turn runs, and the closin
   } finally {
     run.stop()
   }
+})
+
+test('only a select named model stands in for a missing model category', () => {
+  const model = isSelect('model')
+  assert.ok(model({ id: 'model', type: 'select' }))
+  assert.ok(model({ id: 'x', category: 'model', type: 'select' }))
+  assert.ok(!model({ id: 'mode', type: 'select' })) // an uncategorized mode picker is not the model
+  assert.ok(!model({ id: 'model', type: 'boolean' }))
+  assert.ok(!isSelect('thought_level')({ id: 'model', type: 'select' }))
 })
