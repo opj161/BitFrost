@@ -521,6 +521,13 @@ function serve() {
         leasesChanged()
         return json(res, 200, { ok: true, ttlMs: VIEWER_TTL_MS })
       }
+      // POST /providers/:id/warm: start the app now, so the first task does not wait for its handshake.
+      if (req.method === 'POST' && parts[0] === 'providers' && parts[1] && parts[2] === 'warm' && !parts[3]) {
+        const p = providers.get(decodeURIComponent(parts[1]))
+        if (!p) return json(res, 404, { error: 'no such provider' })
+        void Promise.resolve(p.warm?.()).catch((e) => log(`${p.id}: warm-up failed: ${(e as Error).message}`))
+        return json(res, 200, { ok: true, warming: !!p.warm })
+      }
       if (req.method === 'GET' && url.pathname === '/providers') return json(res, 200, { providers: await providerList() })
       if (req.method === 'GET' && parts[0] === 'providers' && parts[1] && parts[2] === 'models' && !parts[3]) {
         return json(res, 200, await modelsOf(decodeURIComponent(parts[1]), url.searchParams.get('refresh') === '1'))
@@ -649,7 +656,17 @@ function serve() {
         if (!Number.isSafeInteger(value) || value < 1) throw new HttpError(400, `${key} must be a positive integer`)
         return value
       }
-      if (req.method === 'GET' && action === 'summary') return json(res, 200, store.summary(session, count('turns', 1)))
+      if (req.method === 'GET' && action === 'summary') {
+        // What it is blocked on, so a quiet agent waiting for an answer is not mistaken for a busy one.
+        const adapterNow = providerFor(session)
+        const approvals = new Set(adapterNow?.pendingApprovals(session) ?? [])
+        const questions = new Set(adapterNow?.pendingQuestions(session) ?? [])
+        const waiting = session.events.flatMap((e) =>
+          e.type === 'approval_requested' && approvals.has(e.approvalId) ? [{ kind: 'permission', id: e.approvalId, title: e.title, since: e.ts }]
+          : e.type === 'question_asked' && questions.has(e.questionId) ? [{ kind: 'question', id: e.questionId, title: e.questions[0]?.question ?? 'a question', since: e.ts }]
+          : [])
+        return json(res, 200, { ...store.summary(session, count('turns', 1)), waiting })
+      }
       if (req.method === 'GET' && action === 'messages') {
         if (itemId) {
           const message = store.message(session.info.id, decodeURIComponent(itemId))

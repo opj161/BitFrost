@@ -111,6 +111,9 @@ export class CodexAdapter implements Provider {
     return !!this.relocate && this.relocate() !== this.bin
   }
 
+  // Run the handshake now, so the first session opens at once.
+  async warm() { await this.start() }
+
   private start(): Promise<void> {
     if (this.ready) return this.ready
     this.ready = (async () => {

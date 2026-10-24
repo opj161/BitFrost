@@ -231,9 +231,13 @@ test('summary and messages endpoints report persisted turns, tools, input and fu
   assert.equal(active.body.session.effort,'high')
   assert.equal(active.body.inbox.items.length,0)
   assert.equal(active.body.inbox.counts.consumed,1)
+  // Blocked on the user, and it says so.
+  assert.deepEqual(active.body.waiting.map((w: any) => [w.kind,w.id]),[['permission',approval.approvalId]])
+  assert.ok(active.body.waiting[0].title.length > 0 && active.body.waiting[0].since > 0)
   await call('POST',`/sessions/${id}/approvals/${approval.approvalId}`,{ decision:'allow' })
   await until('completion',async () => (await call('GET',`/sessions/${id}`)).body.state === 'idle')
   const summary = (await call('GET',`/sessions/${id}/summary?turns=2`)).body
+  assert.deepEqual(summary.waiting,[])
   assert.equal(summary.turns[0].reason,'end_turn')
   assert.equal(summary.latestText.text,'It listed the directory: 2 entries.')
   assert.deepEqual(summary.usage,{ inputTokens:1200,outputTokens:45,cachedTokens:300,requests:1 })
@@ -418,6 +422,13 @@ test('an unfinished persisted turn ends with daemon_restart after a hard daemon 
   assert.deepEqual([summary.turns[0].status,summary.turns[0].reason],['interrupted','daemon_restart'])
   assert.ok(summary.turns[0].endedAt)
   assert.equal((await call('GET',`/sessions/${id}/messages`)).body.turns[0].reason,'daemon_restart')
+})
+
+test('POST /providers/:id/warm starts the app ahead of a task, and an unknown one is refused', async () => {
+  const warm = await call('POST', '/providers/codex/warm')
+  assert.strictEqual(warm.status, 200)
+  assert.deepStrictEqual(warm.body, { ok: true, warming: true })
+  assert.strictEqual((await call('POST', '/providers/nope/warm')).status, 404)
 })
 
 test('/providers lists every app, with its mode and whether it runs', async () => {

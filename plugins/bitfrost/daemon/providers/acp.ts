@@ -539,6 +539,9 @@ export class AcpProvider implements Provider {
     this.cancelTurn(st)
   }
 
+  // Run the handshake now, so the first session opens at once.
+  async warm() { await this.start() }
+
   dispose() {
     for (const { timer } of this.parked.values()) clearTimeout(timer)
     this.parked.clear()

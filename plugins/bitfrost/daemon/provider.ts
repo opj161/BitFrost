@@ -66,6 +66,8 @@ export interface Provider {
   setAutoMode?(session: Session): void
   // Take a new providers.<id>.models list without restarting the app.
   setModels?(models: string[] | null): void
+  // Start the app ahead of the first task. Optional; a failure only costs the head start.
+  warm?(): Promise<void>
   dispose?(): void
   // Release adapter state only after the session stops.
   disposeSession?(session: Session): void
