@@ -153,6 +153,10 @@ Claude is told at the start of each session which models you have and what they 
 
 When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode, a safety review decides instead.
 
+While a subagent waits for your answer, Claude's `status` tool shows it as waiting for permission, so a quiet agent isn't mistaken for a busy one.
+
+Subagents work in your project folder. If it has a `CLAUDE.md` but no `AGENTS.md` (which Codex reads instead), each subagent is told where the project's instructions are.
+
 [Official handback](GUIDE.md#what-is-official-handback) optionally uses a Claude model to return subagent reports through Claude Code's auto-mode safety classifier; it is off by default and adds Claude usage.
 
 To see what the BitFrost daemon is doing and which apps it found:
