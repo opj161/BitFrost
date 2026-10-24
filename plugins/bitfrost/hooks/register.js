@@ -17,6 +17,10 @@ const TEXT_CAP = 20_000 // longest tool answer before paging
 const FINAL_CAP = 8000 // longest final text in the messages tool
 const STOP_TRIES = 3
 const STOP_RETRY_MS = 1000
+const SETUP_RETRY_MS = 15_000 // how soon a failed connect tries again
+const SETUP_RETRIES = 40 // about ten minutes of trying
+const START_TRIES = 3 // starts of a subagent's app session, for a busy machine
+const START_RETRY_MS = 1500
 const CATCHUP_MAX = 300 // events missed while away; more are counted instead of drawn
 
 const DEVELOPER_INSTRUCTIONS =
@@ -56,6 +60,8 @@ let agentsAt = 0 // when the helper last built its model list
 let syncing = false
 let claudeSession = null
 let renewal = null // the lease timer
+let setupRetry = null // the timer that tries to connect again after a failed start
+let live = false // between this session's start and its own end
 const agents = new Map()
 const foreign = new Map() // agent id to subagent state
 const notOurs = new Set() // agent ids the store has no record of
@@ -152,6 +158,26 @@ async function acquireLease($) {
   leaseId = r.leaseId
 }
 
+// Opens the other app's session. A busy machine can make the app slow to open one, and the helper keeps the
+// one that opened late for the next try, so a try that failed for that reason is repeated before it counts.
+async function startRemote($, body) {
+  let failure
+  for (let i = 1; i <= START_TRIES; i++) {
+    try {
+      return await daemon($, 'POST', '/sessions', { ...body, leaseId })
+    } catch (err) {
+      failure = err
+      const lapsed = err.status === 403 // the lease ran out while this waited
+      const transient = err.status === undefined || err.status >= 500
+      if (i === START_TRIES || !(lapsed || transient)) break
+      await debug($, `bitfrost: opening ${body.agent} failed (${err.message}); trying again`)
+      if (lapsed) await acquireLease($).catch(() => {})
+      await $.clock.sleep(START_RETRY_MS * i)
+    }
+  }
+  throw failure
+}
+
 // Registers new or changed models and forgets dropped ones, which agent.offer then hides.
 async function syncAgents($) {
   const { agents: found, nameTable: table, at, hint } = await daemon($, 'GET', '/agents')
@@ -178,6 +204,37 @@ async function syncAgents($) {
     $.ui.invalidate('prompt.context')
   }
   return { found, hint }
+}
+
+// Connects this session to the helper: starts it, takes a lease, offers its models and registers the tools.
+async function connect($, profile) {
+  await ensureDaemon($)
+  leaseArgs = { host: 'claude-code', profile, hostSessionId: claudeSession }
+  await acquireLease($)
+  keepLease($)
+  const { found, hint } = await syncAgents($)
+  if (!found.length && hint) $.ui.log(`BitFrost: no models to offer. ${hint}`)
+  try {
+    await registerTools($)
+  } catch (err) {
+    await debug($, `bitfrost: could not register the status, messages and send tools (${err.message})`)
+  }
+}
+
+// A helper that was slow or busy at start would leave this session without models for good, so try again.
+// A broken config or a refused profile will not mend by waiting.
+function retryConnect($, profile, attempt) {
+  setupRetry?.cancel()
+  setupRetry = null
+  if (attempt > SETUP_RETRIES || !live) return
+  setupRetry = $.clock.after(SETUP_RETRY_MS, () => {
+    setupRetry = null
+    if (!live) return
+    void connect($, profile).catch((err) => {
+      if (err.status === 503 && err.daemonError) return tellConfigError($, err.daemonError)
+      if (err.status !== 403) retryConnect($, profile, attempt + 1)
+    })
+  })
 }
 
 // Check in so the helper stays up while this session is open.
@@ -383,6 +440,17 @@ async function* answerApprovals($, st, nextIndex, signal) {
     if (r.line) lines.push(r.line)
   }
   return lines
+}
+
+// A Claude project keeps its rules in CLAUDE.md, which Codex does not read (it reads AGENTS.md), so say where they are.
+async function projectRules($, dir) {
+  try {
+    if (await $.fs.exists(`${dir}/AGENTS.md`)) return ''
+    for (const name of ['CLAUDE.md', '.claude/CLAUDE.md']) {
+      if (await $.fs.exists(`${dir}/${name}`)) return ` This project keeps its instructions in ${name}; read it before you start and follow it.`
+    }
+  } catch {}
+  return ''
 }
 
 // The subagent's worktree if it asked for isolation, else the project root.
@@ -1077,6 +1145,15 @@ function stateSince(s) {
   return { label: stopped ? 'stopped' : (ss.state ?? 'unknown'), ms: Number.isFinite(ms) && ms >= 0 ? ms : null }
 }
 
+// What the agent is blocked on, so a quiet agent waiting for an answer is not read as a busy one.
+function waitingLine(s) {
+  const w = s.waiting?.[0]
+  if (!w) return ''
+  const more = s.waiting.length > 1 ? ` (+${s.waiting.length - 1} more)` : ''
+  const since = w.since ? ` for ${dur(Date.now() - msOf(w.since))}` : ''
+  return w.kind === 'question' ? `waiting for an answer to "${clip(w.title, 80)}"${since}${more}` : `waiting for permission to ${clip(w.title, 80)}${since}${more}`
+}
+
 function summaryLine(a, s) {
   const ss = s.session ?? {}
   const effort = ss.effort ?? a.st?.effort
@@ -1084,7 +1161,7 @@ function summaryLine(a, s) {
   const last = s.turns?.at(-1)
   const ended = last?.endedAt ? `last turn ${last.reason ?? last.status}` : ''
   const st = stateSince(s)
-  return [`- ${a.agentId}: ${a.def.displayName}${effort ? ` (${effort})` : ''}, ${st.label}${st.ms != null ? ` ${dur(st.ms)}` : ''}`, ss.title && clip(ss.title, 80), now, ended].filter(Boolean).join('; ')
+  return [`- ${a.agentId}: ${a.def.displayName}${effort ? ` (${effort})` : ''}, ${st.label}${st.ms != null ? ` ${dur(st.ms)}` : ''}`, ss.title && clip(ss.title, 80), waitingLine(s) || now, ended].filter(Boolean).join('; ')
 }
 
 function summaryText(a, s) {
@@ -1093,6 +1170,8 @@ function summaryText(a, s) {
   const lines = [`${a.def.displayName}${effort ? ` (${effort})` : ''}: agent ${a.agentId}, BitFrost session ${ss.id ?? a.sessionId}${ss.plan ? `, plan ${ss.plan}` : ''}`]
   const st = stateSince(s)
   lines.push(`State: ${st.label}${st.ms != null ? ` for ${dur(st.ms)}` : ''}${ss.title ? `. Task: ${clip(ss.title, 160)}` : ''}`)
+  const blocked = waitingLine(s)
+  if (blocked) lines.push(`Blocked: ${blocked}. The user is being asked; it carries on once they answer.`)
   if (s.live?.activity || s.live?.partialText) lines.push(`Now: ${clip(s.live.activity, 160)}${s.live.partialText ? ` "${clip(s.live.partialText, 300)}"` : ''}`)
   if (s.activeTool) lines.push(`Running: ${s.activeTool.name} ${clip(s.activeTool.summary, 200)} (for ${dur(Date.now() - msOf(s.activeTool.startedAt))})`)
   if (s.recentTools?.length) lines.push(`Recent tools:\n${s.recentTools.map((t) => `  ${t.name} [${t.status}] ${clip(t.summary, 160)}`).join('\n')}`)
@@ -1317,23 +1396,19 @@ export const register = (on) => {
     agentsAt = 0
     foreign.clear()
     notOurs.clear()
+    // Known before anything slow, so the end of the session this one replaced can tell it is not ours.
+    claudeSession = await $.session.id()
+    live = true
+    setupRetry?.cancel()
+    setupRetry = null
     try {
-      await ensureDaemon($)
-      claudeSession = await $.session.id()
-      leaseArgs = { host: 'claude-code', profile, hostSessionId: claudeSession }
-      await acquireLease($)
-      keepLease($)
-      const { found, hint } = await syncAgents($)
-      if (!found.length && hint) $.ui.log(`BitFrost: no models to offer. ${hint}`)
+      await connect($, profile)
     } catch (err) {
-      if (err.status === 503 && err.daemonError && !toldConfigError) tellConfigError($, err.daemonError)
-      $.ui.log(`bitfrost: no foreign agents this session (${err.message})`, { to: 'debug' })
-      return next(e)
-    }
-    try {
-      await registerTools($)
-    } catch (err) {
-      await debug($, `bitfrost: could not register the status, messages and send tools (${err.message})`)
+      const config = err.status === 503 && err.daemonError
+      if (config && !toldConfigError) tellConfigError($, err.daemonError)
+      const final = config || err.status === 403
+      $.ui.log(final ? `bitfrost: no foreign agents this session (${err.message})` : `bitfrost: no foreign agents yet (${err.message}); trying again`, { to: 'debug' })
+      if (!config && err.status !== 403) retryConnect($, profile, 1)
     }
     return next(e)
   })
@@ -1349,6 +1424,12 @@ export const register = (on) => {
   })
 
   on('session.end', async ($, e, next) => {
+    // The end of a session that a resume or /clear replaced can arrive after the new one has started.
+    // It must not take down the new session's lease, models and tools.
+    if (e.sessionId && claudeSession && e.sessionId !== claudeSession) return next(e)
+    live = false
+    setupRetry?.cancel()
+    setupRetry = null
     for (const [agentId, st] of foreign) await saveRecord($, agentId, st, true)
     receipts.length = 0
     renewal?.cancel()
@@ -1379,6 +1460,8 @@ export const register = (on) => {
     let def = name && e.provider?.plugin?.split('@')[0] === owner ? agents.get(name) : undefined
     if (!def) return next(e)
     $.ui.log(`bitfrost: spawning ${e.subagentType} (parent mode ${e.permissionMode})`, { to: 'debug' })
+    // Start the app now: its handshake runs while the task is handed over, not after.
+    void daemon($, 'POST', `/providers/${encodeURIComponent(def.harness)}/warm`).catch(() => {})
     // If Claude picked a sibling of the model the user named, use the named one.
     const named = await namedInLatestMessage($)
     const own = named.find((n) => n.def === def)
@@ -1802,13 +1885,13 @@ async function* replayStep($, e, next, st, ctl) {
     st.ownFailure = false
     try {
       if (!st.sessionId) {
-        const r = await daemon($, 'POST', '/sessions', {
-          leaseId,
+        const dir = await agentDir($)
+        const r = await startRemote($, {
           agent: st.def.name,
           effort: st.effort,
-          cwd: await agentDir($),
+          cwd: dir,
           prompt: last.text,
-          developerInstructions: DEVELOPER_INSTRUCTIONS,
+          developerInstructions: DEVELOPER_INSTRUCTIONS + (await projectRules($, dir)),
           canAskUser: true,
           autoReview: st.auto,
           title: st.title,

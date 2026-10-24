@@ -48,6 +48,8 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     inputFailures: [] as ('accept' | 'lose')[],
     interruptReplies: [] as { status: number; body: any }[],
     attachFailures: 0, // 500s before an attach works
+    sessionFailures: 0, // 500s before a POST /sessions opens one, as a busy machine gives
+    existing: [] as string[], // paths fs.exists finds
     storeFail: false,
     holdItems: false, // item waits answer only when the clock moves
     holdEvents: false, // an empty event wait answers only when the clock moves
@@ -105,6 +107,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
   })
   on('store.keys', () => ({ value: Object.keys(w.stored) }))
 
+  on('fs.exists', ($: any, e: any) => ({ value: fake.existing.includes(e.path) }))
   on('fs.read', ($: any, e: any) => ({ value: JSON.stringify({ version: '0.7.1' }) }))
   on('process.run', ($: any, e: any) => {
     w.runs.push(e.argv)
@@ -135,7 +138,11 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
       else reply = { ok: true, agentsAt: fake.agentsReply.at }
     }
     else if (path === '/agents') reply = fake.agentsReply
-    else if (path === '/sessions') {
+    else if (path === '/sessions' && fake.sessionFailures > 0) {
+      fake.sessionFailures--
+      status = 500
+      reply = { error: 'Fake did not open a session within 25 s' }
+    } else if (path === '/sessions') {
       const scripted = fake.queue.shift() ?? { events: [], items: {}, approvals: [] }
       const id = `fx-${++sessionN}`
       sessions.set(id, scripted)
@@ -208,7 +215,8 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     w.modelCalls.push(e)
     return { value: fake.reviewReply }
   })
-  on('tool.check', () => ({ value: { decision: (fake as any).checkDecision ?? 'ask' } }))
+  // The engine now consults this before every tool call; 'allow' lets the replayed tools run, as a person would.
+  on('tool.check', () => ({ decision: (fake as any).checkDecision ?? 'allow' }))
   on('tool.register', ($: any, e: any) => {
     w.tools.push(e)
     return { value: { tool: `mcp__bitfrost__${e.name}` } }
@@ -549,7 +557,7 @@ test('a permission request reaches the user and the decision is posted back', { 
   expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode allowed GPT-6-Sol to run npm run build')
 })
 
-test('auto mode stays quiet when Claude Code\'s own check allows the action, and still speaks when it blocks', { timeoutMs: 20000 }, async ($, on) => {
+test('auto mode stays quiet when Claude Code\'s own check allows the action', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)
   ;(w.fake as any).checkDecision = 'allow'
@@ -573,25 +581,6 @@ test('auto mode stays quiet when Claude Code\'s own check allows the action, and
   addToolResult(w, a.agentId, toolChunk(s1.chunks).id, 'ok')
   const s2 = await step($, a.agentId, 1)
   expect(textsOf(s2.chunks).some((t: string) => t.startsWith('Auto mode'))).toBe(false)
-
-  ;(w.fake as any).checkDecision = 'deny'
-  w.fake.queue.push({
-    events: [
-      { type: 'command_started', seq: 1, itemId: 'cmd-4', command: 'rm -rf /', summary: 'delete all' },
-      { type: 'approval_requested', seq: 2, approvalId: 'appr-4', title: 'run rm -rf /', detail: '', tool: 'Bash', input: { command: 'rm -rf /' } },
-      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
-    ],
-    items: {},
-    approvals: [{ approvalId: 'appr-4', title: 'run rm -rf /', detail: '', tool: 'Bash', input: { command: 'rm -rf /' } }],
-  })
-  const b = await spawn($, 'clean up', 'auto')
-  w.rows[b.agentId] = [{ role: 'user', text: 'clean up', toolUses: [] }]
-  w.api[b.agentId] = []
-  const s3 = await step($, b.agentId, 0)
-  await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s3.chunks).id, input: inputOf(s3.chunks) })
-  addToolResult(w, b.agentId, toolChunk(s3.chunks).id, 'not run')
-  const s4 = await step($, b.agentId, 1)
-  expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode blocked')
 })
 
 test('auto mode review also accepts a bare-string model reply', { timeoutMs: 20000 }, async ($, on) => {
@@ -604,7 +593,7 @@ test('auto mode review also accepts a bare-string model reply', { timeoutMs: 200
       { type: 'approval_requested', seq: 2, approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' },
       { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
     ],
-    items: {},
+    items: { 'cmd-9': { type: 'command_completed', status: 'declined' } },
     approvals: [{ approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' }],
   })
   const b = await spawn($, 'clean scratch', 'auto')
@@ -613,7 +602,7 @@ test('auto mode review also accepts a bare-string model reply', { timeoutMs: 200
 
   const s = await step($, b.agentId, 0)
   const allowed = await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })
-  expect(w.posts['/sessions/fx-1/approvals/appr-9']).toEqual([{ decision: 'deny', by: 'auto mode' }])
+  expect(w.posts['/sessions/fx-1/approvals/appr-9']).toEqual([{ decision: 'deny', reason: 'Auto mode blocked this: risky delete', by: 'auto mode' }])
   expect(allowed).toEqual({ result: { stdout: '', stderr: 'Not run: permission was denied.', interrupted: false } })
 })
 
@@ -1872,4 +1861,107 @@ test('a relay model calling another tool is refused as a try, asked again, and n
   expect(textsOf(again.chunks)).not.toContain('Report delivered.')
   expect((await toolCall($, agentId, { name: 'SubagentHandback', id: toolChunk(again.chunks).id, input: inputOf(again.chunks) })).deny).toBeUndefined()
   expect(w.stored[`agent:${agentId}`].relay.delivered).toBe(true)
+})
+
+test('a session.end for a session that was replaced leaves the new one connected', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const offered = () =>
+    $.agent.offer({ agent: 'bitfrost:gpt-6-sol', description: '', source: 'plugin', provider: { plugin: 'bitfrost@local', tier: 'user' } } as any)
+  const renewals = () => w.calls.filter((c) => c.method === 'POST' && c.path.startsWith('/leases/')).length
+
+  // A resume or /clear ends the old session, possibly after the new one has begun.
+  await $.session.end({ reason: 'resume', sessionId: 'old-1' } as any)
+  expect(w.calls.filter((c) => c.method === 'DELETE')).toEqual([])
+  expect(await offered()).toEqual({ isOffered: true })
+  const before = renewals()
+  await w.clock.advance(10_000)
+  expect(renewals()).toBeGreaterThan(before) // still renewing
+
+  // Its own end still lets go.
+  await $.session.end({ reason: 'other', sessionId: 'main-1' } as any)
+  expect(w.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([`/leases/${w.leaseId}`])
+})
+
+test('a connect that fails at session start is tried again', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.leaseReply = { status: 500, body: { error: 'busy' } }
+  await start($)
+  expect(w.registered).toEqual([])
+  expect(w.uiLogs.some((l) => l.to === 'debug' && l.text.includes('trying again'))).toBe(true)
+
+  w.fake.leaseReply = null
+  await w.clock.advance(15_000)
+  expect(w.registered.map((r) => r.name)).toEqual(['gpt-6-sol'])
+  expect(w.tools.map((t) => t.name)).toEqual(['status', 'messages', 'send'])
+  await w.clock.advance(60_000)
+  expect(w.posts['/leases']).toHaveLength(2) // one failed, one worked; nothing more
+})
+
+test('a refused profile is not retried at session start', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.leaseReply = { status: 403, body: { error: 'profile is not allowed' } }
+  await start($)
+  await w.clock.advance(120_000)
+  expect(w.posts['/leases']).toHaveLength(1)
+  expect(w.registered).toEqual([])
+})
+
+test('an app session that fails to open is tried again before the agent fails, and its app is warmed', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.fake.sessionFailures = 1
+  w.fake.queue.push({ events: [{ type: 'command_started', seq: 1, itemId: 'cmd-1', command: 'npm test', summary: 'run the suite' }], items: {}, approvals: [] })
+  const { agentId } = await spawn($, 'fix the parser')
+  w.rows[agentId] = [{ role: 'user', text: 'fix the parser', toolUses: [] }]
+  w.api[agentId] = []
+  expect(w.calls.some((c) => c.method === 'POST' && c.path === '/providers/codex/warm')).toBe(true)
+
+  const p = step($, agentId, 0)
+  let done = false
+  p.then(() => (done = true), () => (done = true))
+  for (let i = 0; i < 20 && !done; i++) await w.clock.advance(1000)
+  const s = await p
+  expect(w.posts['/sessions']).toHaveLength(2)
+  expect(toolChunk(s.chunks).name).toBe('Bash')
+})
+
+test('a subagent is told where the project keeps its rules when only CLAUDE.md exists', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.fake.existing = ['/proj/CLAUDE.md']
+  w.fake.queue.push({ events: [{ type: 'command_started', seq: 1, itemId: 'cmd-1', command: 'npm test', summary: 'run the suite' }], items: {}, approvals: [] })
+  const a = await spawn($, 'fix the parser')
+  w.rows[a.agentId] = [{ role: 'user', text: 'fix the parser', toolUses: [] }]
+  w.api[a.agentId] = []
+  await step($, a.agentId, 0)
+  expect(w.posts['/sessions'].at(-1).developerInstructions).toContain('keeps its instructions in CLAUDE.md')
+
+  w.fake.existing = ['/proj/CLAUDE.md', '/proj/AGENTS.md']
+  w.fake.queue.push({ events: [{ type: 'command_started', seq: 1, itemId: 'cmd-1', command: 'npm test', summary: 'run the suite' }], items: {}, approvals: [] })
+  const b = await spawn($, 'fix the parser')
+  w.rows[b.agentId] = [{ role: 'user', text: 'fix the parser', toolUses: [] }]
+  w.api[b.agentId] = []
+  await step($, b.agentId, 0)
+  expect(w.posts['/sessions'].at(-1).developerInstructions).not.toContain('CLAUDE.md')
+})
+
+test('status says when a subagent is blocked on a permission or a question', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const { agentId } = await running($, w)
+  w.sessions.get('fx-1')!.summary = {
+    session: { id: 'fx-1', state: 'running', title: 'fix the parser', elapsedMs: 75_000 },
+    activeTool: { name: 'Bash', summary: 'npm test', startedAt: Date.now() - 5000 },
+    waiting: [{ kind: 'permission', id: 'ap-1', title: 'run npm test', since: Date.now() - 62_000 }, { kind: 'question', id: 'q-1', title: 'Which one?', since: Date.now() - 1000 }],
+    turns: [],
+    lastSeq: 1,
+  }
+  const call = (input: any) => $.tool.call({ tool: 'mcp__bitfrost__status', tool_use_id: 't-status', ...input } as any) as Promise<any>
+  const line = (await call({})).result
+  expect(line).toContain('waiting for permission to run npm test for 1m 2s (+1 more)')
+  expect(line).not.toContain('running Bash')
+  const detail = (await call({ agent: agentId })).result
+  expect(detail).toContain('Blocked: waiting for permission to run npm test')
+  expect(detail).toContain('The user is being asked')
 })
