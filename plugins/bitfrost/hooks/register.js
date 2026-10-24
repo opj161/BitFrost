@@ -78,6 +78,13 @@ function tellConfigError($, detail) {
   $.ui.log(`BitFrost is off: ${detail} Fix your BitFrost config and restart this session.`)
 }
 
+// Tell the user once per session that this Claude profile may not use BitFrost, instead of failing quietly.
+let toldProfile = false
+function tellProfileDenied($, profile) {
+  toldProfile = true
+  $.ui.log(`BitFrost is off for this Claude profile (${profile}). Add it to allowedProfiles on the config screen's Settings page or in ~/.config/bitfrost/config.json, then restart this session.`)
+}
+
 // Tell the user about settings they haven't chosen once per session. They stay off until then.
 let toldNewSettings = false
 function tellNewSettings($) {
@@ -1391,6 +1398,7 @@ export const register = (on) => {
     const profile = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${home}/.claude`
     toldConfigError = false
     toldNewSettings = false
+    toldProfile = false
     // A new session has none of our agent types yet; stored subagents come back on use.
     agents.clear()
     agentsAt = 0
@@ -1406,6 +1414,7 @@ export const register = (on) => {
     } catch (err) {
       const config = err.status === 503 && err.daemonError
       if (config && !toldConfigError) tellConfigError($, err.daemonError)
+      if (err.status === 403 && !toldProfile) tellProfileDenied($, profile)
       const final = config || err.status === 403
       $.ui.log(final ? `bitfrost: no foreign agents this session (${err.message})` : `bitfrost: no foreign agents yet (${err.message}); trying again`, { to: 'debug' })
       if (!config && err.status !== 403) retryConnect($, profile, 1)

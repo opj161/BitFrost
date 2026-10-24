@@ -1905,6 +1905,10 @@ test('a refused profile is not retried at session start', { timeoutMs: 20000 }, 
   await w.clock.advance(120_000)
   expect(w.posts['/leases']).toHaveLength(1)
   expect(w.registered).toEqual([])
+  // The user is told once, in the transcript, not only in the debug log.
+  const said = w.uiLogs.filter((l) => l.to !== 'debug' && l.text.includes('BitFrost is off for this Claude profile'))
+  expect(said).toHaveLength(1)
+  expect(said[0].text).toContain('allowedProfiles')
 })
 
 test('an app session that fails to open is tried again before the agent fails, and its app is warmed', { timeoutMs: 20000 }, async ($, on) => {

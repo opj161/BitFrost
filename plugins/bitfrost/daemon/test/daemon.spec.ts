@@ -167,6 +167,7 @@ test('the fake Codex model is listed as an agent', async () => {
   assert.deepStrictEqual(r.body.agents.map((a: any) => a.name), ['gpt-test'])
   assert.match(r.body.agents[0].description, /GPT-Test, OpenAI's model gpt-test/)
   assert.match(r.body.nameTable, /bitfrost:gpt-test/)
+  assert.match(r.body.nameTable, /make the prompt self-contained/) // how these differ from native subagents
 })
 
 test('status shows the provider, the lease and no sessions', async () => {
