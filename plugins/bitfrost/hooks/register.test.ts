@@ -208,7 +208,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     w.modelCalls.push(e)
     return { value: fake.reviewReply }
   })
-  on('tool.check', () => ({ value: { decision: 'ask' } }))
+  on('tool.check', () => ({ value: { decision: (fake as any).checkDecision ?? 'ask' } }))
   on('tool.register', ($: any, e: any) => {
     w.tools.push(e)
     return { value: { tool: `mcp__bitfrost__${e.name}` } }
@@ -547,6 +547,51 @@ test('a permission request reaches the user and the decision is posted back', { 
   addToolResult(w, b.agentId, toolChunk(s3.chunks).id, 'built')
   const s4 = await step($, b.agentId, 1)
   expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode allowed GPT-6-Sol to run npm run build')
+})
+
+test('auto mode stays quiet when Claude Code\'s own check allows the action, and still speaks when it blocks', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  ;(w.fake as any).checkDecision = 'allow'
+  w.fake.queue.push({
+    events: [
+      { type: 'command_started', seq: 1, itemId: 'cmd-3', command: 'npm test', summary: 'run tests' },
+      { type: 'approval_requested', seq: 2, approvalId: 'appr-3', title: 'run npm test', detail: '', tool: 'Bash', input: { command: 'npm test' } },
+      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Tests pass.' },
+    ],
+    items: { 'cmd-3': { type: 'command_completed', status: 'completed', exitCode: 0, output: 'ok' } },
+    approvals: [{ approvalId: 'appr-3', title: 'run npm test', detail: '', tool: 'Bash', input: { command: 'npm test' } }],
+  })
+  const a = await spawn($, 'run the tests', 'auto')
+  w.rows[a.agentId] = [{ role: 'user', text: 'run the tests', toolUses: [] }]
+  w.api[a.agentId] = []
+
+  const s1 = await step($, a.agentId, 0)
+  await toolCall($, a.agentId, { name: 'Bash', id: toolChunk(s1.chunks).id, input: inputOf(s1.chunks) })
+  expect(w.modelCalls).toHaveLength(0) // Claude Code's check decided, so no review model
+  expect(w.posts['/sessions/fx-1/approvals/appr-3']).toEqual([{ decision: 'allow', by: 'auto mode' }])
+  addToolResult(w, a.agentId, toolChunk(s1.chunks).id, 'ok')
+  const s2 = await step($, a.agentId, 1)
+  expect(textsOf(s2.chunks).some((t: string) => t.startsWith('Auto mode'))).toBe(false)
+
+  ;(w.fake as any).checkDecision = 'deny'
+  w.fake.queue.push({
+    events: [
+      { type: 'command_started', seq: 1, itemId: 'cmd-4', command: 'rm -rf /', summary: 'delete all' },
+      { type: 'approval_requested', seq: 2, approvalId: 'appr-4', title: 'run rm -rf /', detail: '', tool: 'Bash', input: { command: 'rm -rf /' } },
+      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
+    ],
+    items: {},
+    approvals: [{ approvalId: 'appr-4', title: 'run rm -rf /', detail: '', tool: 'Bash', input: { command: 'rm -rf /' } }],
+  })
+  const b = await spawn($, 'clean up', 'auto')
+  w.rows[b.agentId] = [{ role: 'user', text: 'clean up', toolUses: [] }]
+  w.api[b.agentId] = []
+  const s3 = await step($, b.agentId, 0)
+  await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s3.chunks).id, input: inputOf(s3.chunks) })
+  addToolResult(w, b.agentId, toolChunk(s3.chunks).id, 'not run')
+  const s4 = await step($, b.agentId, 1)
+  expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode blocked')
 })
 
 test('auto mode review also accepts a bare-string model reply', { timeoutMs: 20000 }, async ($, on) => {

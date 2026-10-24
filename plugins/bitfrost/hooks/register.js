@@ -9,7 +9,7 @@
 const PLUGIN_ROOT = new URL('..', import.meta.url).pathname
 const BITFROSTD = `${PLUGIN_ROOT}bin/bitfrostd`
 const POLL_MS = 4000 // also how fast a cancel is noticed
-const RENEW_MS = 10_000 // the helper drops a lease after 30 s without a check-in
+const RENEW_MS = 10_000 // the helper drops a lease after 90 s without a check-in
 // Claude Code stops a subagent that streams nothing for 10 minutes, so quiet ones send an empty chunk this often.
 const KEEPALIVE_MS = 20_000
 const SAVE_MS = 5000 // how often the event cursor is saved for a restore
@@ -324,7 +324,7 @@ async function* askUser($, st, approval, nextIndex, signal, why = '') {
       await daemon($, 'POST', `/sessions/${st.sessionId}/auto`)
     } catch {}
     const r = yield* reviewApproval($, st, approval, nextIndex, signal)
-    return { decision: r.decision, line: `You switched ${st.def.displayName} to auto mode. ${r.line}` }
+    return { decision: r.decision, line: `You switched ${st.def.displayName} to auto mode.${r.line ? ` ${r.line}` : ''}` }
   }
   const decision = answer === ALLOW_ONCE ? 'allow' : answer === ALLOW_SESSION ? 'allow_session' : 'deny'
   try {
@@ -339,7 +339,8 @@ async function reviewVerdict($, st, approval) {
   if (approval.tool) {
     try {
       const c = await $.tool.check({ tool: approval.tool, input: approval.input ?? {} })
-      if (c.decision === 'allow') return { decision: 'allow', why: c.rule ? `your rule ${c.rule}` : 'Claude Code\'s permission check' }
+      // Routine: Claude Code would have allowed it anyway, and the command's own row already shows it.
+      if (c.decision === 'allow') return { decision: 'allow', routine: true, why: c.rule ? `your rule ${c.rule}` : 'Claude Code\'s permission check' }
       if (c.decision === 'deny') return { decision: 'deny', why: c.rule ? `your rule ${c.rule}` : (c.reason ?? 'Claude Code\'s permission check') }
     } catch {}
   }
@@ -369,7 +370,7 @@ async function* reviewApproval($, st, approval, nextIndex, signal) {
     await daemon($, 'POST', `/sessions/${st.sessionId}/approvals/${approval.approvalId}`, { decision: verdict.decision, reason, by: 'auto mode' })
   } catch {}
   const did = verdict.decision === 'allow' ? 'allowed' : 'blocked'
-  return { decision: verdict.decision, line: `Auto mode ${did} ${st.def.displayName} to ${approval.title}${verdict.why ? ` (${verdict.why})` : ''}.` }
+  return { decision: verdict.decision, line: verdict.routine ? null : `Auto mode ${did} ${st.def.displayName} to ${approval.title}${verdict.why ? ` (${verdict.why})` : ''}.` }
 }
 
 async function* answerApprovals($, st, nextIndex, signal) {
@@ -379,7 +380,7 @@ async function* answerApprovals($, st, nextIndex, signal) {
     if (st.asked.has(a.approvalId)) continue
     st.asked.add(a.approvalId)
     const r = st.auto ? yield* reviewApproval($, st, a, nextIndex, signal) : yield* askUser($, st, a, nextIndex, signal)
-    lines.push(r.line)
+    if (r.line) lines.push(r.line)
   }
   return lines
 }
