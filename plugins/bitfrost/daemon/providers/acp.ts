@@ -13,7 +13,7 @@ import { createInterface } from 'node:readline'
 import type { Decision, EndReason, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderCapabilities, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
-import { asClaudeTool, blankTool, choicesOf, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange } from './acp-shapes.ts'
+import { asClaudeTool, blankTool, choicesOf, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange, isShellTool } from './acp-shapes.ts'
 import { formContent, globMatch, grantKeyOf, hasInput, isSelect, objectOf, outputOf, permissionOutcome, summaryOf, toQuestion, vendorOf, type ToolCall } from './acp-shapes.ts'
 
 type Json = any
@@ -22,6 +22,14 @@ const PROTOCOL_VERSION = 1
 // ACP uses -32000 when the user must sign in.
 const AUTH_REQUIRED = -32000
 const CANCEL_GRACE_MS = 15_000
+// The host gives up on a start request after 30 s, so answer before that, with the reason.
+const SPAWN_MS = 25_000
+// Only a handshake that has gone quiet for good is killed; a loaded machine can take a minute.
+const INIT_MS = 120_000
+// A session opened after its caller gave up waits this long for the retry.
+const PARK_MS = 5 * 60_000
+// Long thinking shows as it goes: whole lines are released this often.
+const REASONING_FLUSH_MS = 1500
 const STOPS: Record<string, string> = {
   max_tokens: 'it reached its output limit',
   max_turn_requests: 'it reached its limit of model requests for one turn',
@@ -66,6 +74,8 @@ export type AcpOptions = {
   record?: ((line: string) => void) | null
   runDir?: string | null
   models?: string[] | null
+  spawnMs?: number // how long a session may take to open
+  initMs?: number // how long the handshake may take
 }
 
 // Cache for a day because listing can switch models and leave history entries.
@@ -76,6 +86,7 @@ type Turn = {
   cancelled: boolean
   wrongModel: string | null
   chunk: { kind: 'text' | 'reasoning'; messageId: string | null; text: string } | null
+  flushTimer: NodeJS.Timeout | null
   items: number
   finalText: string
   tools: Map<string, ToolCall>
@@ -117,6 +128,8 @@ export class AcpProvider implements Provider {
   private record: ((line: string) => void) | null
   private cacheFile: string | null
   private allow: string[] | null
+  private spawnMs: number
+  private initMs: number
   private models: { at: number; allow: string[] | null; list: HarnessModel[] } | null = null
   private proc: ChildProcess | null = null
   private ready: Promise<void> | null = null
@@ -127,6 +140,7 @@ export class AcpProvider implements Provider {
   private states = new Map<string, State>()
   private pending = new Map<string, Pending>()
   private opening = new Set<Session>()
+  private parked = new Map<string, { r: Json; timer: NodeJS.Timeout }>()
   private discovering = 0
 
   constructor(spec: AcpAgentSpec, launch: AcpLaunch, opts: AcpOptions) {
@@ -141,6 +155,8 @@ export class AcpProvider implements Provider {
     this.record = opts.record ?? null
     this.cacheFile = opts.runDir ? path.join(opts.runDir, `acp-${spec.id}-models.json`) : null
     this.allow = opts.models?.length ? opts.models : null
+    this.spawnMs = opts.spawnMs ?? SPAWN_MS
+    this.initMs = opts.initMs ?? INIT_MS
   }
 
   // The next listing reads thought levels for newly listed models.
@@ -168,6 +184,14 @@ export class AcpProvider implements Provider {
       if (r?.protocolVersion !== PROTOCOL_VERSION) throw new Error(`${this.displayName} speaks ACP version ${r?.protocolVersion}, not ${PROTOCOL_VERSION}`)
       this.agentCaps = r.agentCapabilities ?? {}
     })
+    // A hung handshake would otherwise stall every later start behind it.
+    const hung = setTimeout(() => {
+      if (this.proc !== proc) return
+      this.log(`${this.id}: no handshake within ${this.initMs / 1000} s; restarting it`)
+      proc.kill()
+    }, this.initMs)
+    hung.unref()
+    this.ready.then(() => clearTimeout(hung), () => clearTimeout(hung))
     this.ready.catch((e) => {
       this.log(`${this.id}: handshake failed: ${e.message}`)
       if (this.proc === proc) proc.kill()
@@ -181,6 +205,8 @@ export class AcpProvider implements Provider {
     this.ready = null
     this.log(`${this.id}: ${this.launch.bin} ${why}`)
     this.pending.clear()
+    for (const { timer } of this.parked.values()) clearTimeout(timer)
+    this.parked.clear()
     for (const session of this.opening) if (session.info.id) session.detach()
     const states = [...this.states.values()]
     this.states.clear()
@@ -375,12 +401,43 @@ export class AcpProvider implements Provider {
 
   async spawnSession(session: Session, req: SpawnRequest): Promise<string> {
     this.opening.add(session)
-    try { return await this.spawn(session, req) } finally { this.opening.delete(session) }
+    let late = false
+    let timer: NodeJS.Timeout | undefined
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        late = true
+        reject(new Error(`${this.displayName} did not open a session within ${this.spawnMs / 1000} s (the machine may be busy); it keeps starting, so try again in a moment`))
+      }, this.spawnMs)
+    })
+    try { return await Promise.race([this.spawn(session, req, () => late), deadline]) } finally { clearTimeout(timer); this.opening.delete(session) }
   }
 
-  private async spawn(session: Session, req: SpawnRequest): Promise<string> {
+  // A session opened too late for its caller waits here, so the retry skips the slow part.
+  private park(key: string, r: Json) {
+    const old = this.parked.get(key)
+    if (old) { clearTimeout(old.timer); this.dropSession(old.r.sessionId) }
+    const timer = setTimeout(() => {
+      this.parked.delete(key)
+      this.dropSession(r.sessionId)
+    }, PARK_MS)
+    timer.unref()
+    this.parked.set(key, { r, timer })
+  }
+
+  private unpark(key: string): Json | null {
+    const hit = this.parked.get(key)
+    if (!hit) return null
+    clearTimeout(hit.timer)
+    this.parked.delete(key)
+    return hit.r
+  }
+
+  private async spawn(session: Session, req: SpawnRequest, isLate: () => boolean): Promise<string> {
     await this.start()
-    const r = await this.newSession(req.cwd, session, req.developerInstructions)
+    const key = `${req.cwd}\0${req.developerInstructions ?? ''}`
+    const r = this.unpark(key) ?? await this.newSession(req.cwd, session, req.developerInstructions)
+    // A start that finished after its caller gave up must not run the task unseen.
+    if (isLate()) { this.park(key, r); throw new Error('the start took too long') }
     let modelOption: string | null
     try {
       modelOption = await this.chooseModel(r.sessionId, r, req.model, req.effort, session)
@@ -388,6 +445,7 @@ export class AcpProvider implements Provider {
       this.dropSession(r.sessionId)
       throw e
     }
+    if (isLate()) { this.park(key, r); throw new Error('the start took too long') }
     const id = `${this.id}_${randomUUID()}`
     session.info.id = id
     const st: State = {
@@ -482,6 +540,8 @@ export class AcpProvider implements Provider {
   }
 
   dispose() {
+    for (const { timer } of this.parked.values()) clearTimeout(timer)
+    this.parked.clear()
     for (const st of this.states.values()) st.session.dropInputs()
     this.proc?.kill()
   }
@@ -509,7 +569,7 @@ export class AcpProvider implements Provider {
   }
 
   private runTurn(st: State, text: string) {
-    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, items: 0, finalText: '', tools: new Map(), lastUsed: null, denied: null }
+    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, flushTimer: null, items: 0, finalText: '', tools: new Map(), lastUsed: null, denied: null }
     st.turn = turn
     st.session.push({ type: 'turn_started', turnId: turn.id })
     // ACP has no system prompt, so prepend instructions to the first message.
@@ -631,9 +691,28 @@ export class AcpProvider implements Provider {
     turn.chunk ??= { kind, messageId, text: '' }
     if (u.content?.type === 'text') turn.chunk.text += String(u.content.text ?? '')
     st.session.live = { activity: kind === 'text' ? 'responding' : 'thinking', partialText: kind === 'text' ? turn.chunk.text : turn.finalText || null, updatedAt: Date.now() }
+    // Only thinking is released early. Text stays whole until a boundary, so the closing message is never split.
+    if (kind === 'reasoning' && !turn.flushTimer) {
+      turn.flushTimer = setTimeout(() => this.flushReasoning(st, turn), REASONING_FLUSH_MS)
+      turn.flushTimer.unref()
+    }
+  }
+
+  // Release the lines of a long thought that are complete, and keep the unfinished one.
+  private flushReasoning(st: State, turn: Turn) {
+    turn.flushTimer = null
+    const c = turn.chunk
+    if (st.turn !== turn || !c || c.kind !== 'reasoning') return
+    let cut = c.text.lastIndexOf('\n')
+    if (cut < 0 && c.text.length > 300) cut = Math.max(c.text.lastIndexOf('. '), c.text.lastIndexOf('? '), c.text.lastIndexOf('! ')) + 1
+    if (cut <= 0) return
+    const head = c.text.slice(0, cut).trim()
+    c.text = c.text.slice(cut).replace(/^\s+/, '')
+    if (head) st.session.push({ type: 'reasoning', itemId: `${c.messageId ?? turn.id}:${++turn.items}`, text: head })
   }
 
   private flush(st: State, turn: Turn) {
+    if (turn.flushTimer) { clearTimeout(turn.flushTimer); turn.flushTimer = null }
     const c = turn.chunk
     turn.chunk = null
     const text = c?.text.trim()
@@ -654,6 +733,7 @@ export class AcpProvider implements Provider {
     if (u.content != null) t.content = u.content
     if (u.locations != null) t.locations = u.locations
     if (u.status != null) t.status = u.status
+    if (isShellTool(t)) t.kind = 'execute'
     if (t.done) return
     if (t.status === 'completed' || t.status === 'failed') this.finishTool(st, id, t)
     // Wait for finished file diffs and usable tool inputs; opencode may send only "bash" first.

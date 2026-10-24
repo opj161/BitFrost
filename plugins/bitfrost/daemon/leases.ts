@@ -10,7 +10,8 @@ import type { Provider } from './provider.ts'
 import { Session } from './session.ts'
 import type { Store } from './store.ts'
 
-export const LEASE_TTL_MS = 30_000
+// Longer than a stalled host (a loaded machine, a laptop waking) needs to renew, and no longer than the 90 s a session may go unpolled.
+export const LEASE_TTL_MS = 90_000
 export const HOLD_MS = 5 * 60_000
 
 export type Lease = { host: string; profile: string; hostSessionId: string; expires: number }
@@ -37,6 +38,16 @@ export class SessionTable {
   addLease(id: string, lease: Omit<Lease, 'expires'>) {
     this.leases.set(id, { ...lease, expires: this.now() + LEASE_TTL_MS })
     if (!lease.hostSessionId) return
+    // A newer lease from the same host session replaces its older ones, which the host may never renew or release.
+    for (const [other, l] of this.leases) {
+      if (other === id || l.hostSessionId !== lease.hostSessionId) continue
+      for (const sid of this.sessionsOf(other)) {
+        this.leaseOf.set(sid, id)
+        const session = this.sessions.get(sid)
+        if (session) { session.info.leaseId = id; session.save() }
+        this.log(`session ${sid}: moved from lease ${other} to ${id}`)
+      }
+    }
     for (const [sid, h] of this.held) {
       if (h.hostSessionId !== lease.hostSessionId) continue
       this.held.delete(sid)
@@ -140,15 +151,16 @@ export class SessionTable {
       const successor = [...this.leases].find(([, other]) => l.hostSessionId && other.hostSessionId === l.hostSessionId)?.[0]
       for (const sid of this.sessionsOf(id)) {
         const s = this.sessions.get(sid)!
-        if (s.info.state === 'running' || s.info.state === 'stopping') {
-          this.log(`lease ${id} ended; interrupting ${sid}`)
-          void s.stop(this.providerFor(s), 'lease')
-        }
+        // The host is still here under a newer lease, so its work carries on.
         if (successor) {
           this.leaseOf.set(sid, successor)
           s.info.leaseId = successor
           s.save()
           continue
+        }
+        if (s.info.state === 'running' || s.info.state === 'stopping') {
+          this.log(`lease ${id} ended; interrupting ${sid}`)
+          void s.stop(this.providerFor(s), 'lease')
         }
         this.leaseOf.delete(sid)
         s.info.leaseId = null

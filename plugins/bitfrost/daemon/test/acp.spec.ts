@@ -852,3 +852,78 @@ test('a late Grok interject ack racing turn end falls back to queued, never stee
     await until('the fallback prompt', () => run.sent().filter((m) => m.method === 'session/prompt').length >= 2)
   } finally { run.stop(); fs.rmSync(dir, { recursive: true, force: true }) }
 })
+
+test('a start that gets no handshake fails with the reason, restarts the app, and the next start works', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-acp-test-'))
+  const logs: string[] = []
+  const hangMark = path.join(dir, 'hung')
+  // The first launch never answers; the second plays a normal scenario.
+  const script = `const fs=require('node:fs');if(!fs.existsSync(${JSON.stringify(hangMark)})){fs.writeFileSync(${JSON.stringify(hangMark)},'1');setInterval(()=>{},1000)}else{process.argv[1]=${JSON.stringify(FAKE)};process.argv[2]=${JSON.stringify(path.join(HERE, 'fixtures', 'acp', 'turn.json'))};import(${JSON.stringify(FAKE)})}`
+  const provider = new AcpProvider(
+    { id: 'fake', displayName: 'Fake', vendor: null, binary: 'fake', args: [], loginCommand: 'fake login', optIn: true, gates: 'all', note: '' },
+    { bin: process.execPath, args: ['-e', script], env: { BITFROST_ACP_LOG: path.join(dir, 'sent.jsonl'), BITFROST_ACP_MARK: path.join(dir, 'crashed') } },
+    { log: (m) => logs.push(m), spawnMs: 400, initMs: 200 },
+  )
+  const first = newSession(dir, 'fake/model-a')
+  const began = Date.now()
+  await assert.rejects(provider.spawnSession(first, { model: 'fake/model-a', cwd: dir, prompt: 'x', developerInstructions: INSTRUCTIONS }), /did not open a session within|Fake .*exited/)
+  assert.ok(Date.now() - began < 3000)
+  await until('the hung app to be restarted', () => logs.some((l) => l.includes('no handshake within')))
+  const second = newSession(dir, 'fake/model-a')
+  await provider.spawnSession(second, { model: 'fake/model-a', cwd: dir, prompt: 'List the files.', developerInstructions: INSTRUCTIONS })
+  assert.match(second.info.id, /^fake_/)
+  ;(provider as any).proc?.kill()
+})
+
+test('a session opened after its caller gave up is kept for the retry instead of running unseen', async () => {
+  const run = fake('turn.json', {}, { spawnMs: 1 })
+  try {
+    const late = newSession(run.dir, 'fake/model-a')
+    await assert.rejects(run.provider.spawnSession(late, { model: 'fake/model-a', cwd: run.dir, prompt: 'x', developerInstructions: INSTRUCTIONS }), /did not open a session within/)
+    await until('the late session to be parked', () => (run.provider as any).parked.size === 1)
+    assert.ok(!run.sent().some((m) => m.method === 'session/prompt'))
+    ;(run.provider as any).spawnMs = 10_000
+    const before = run.sent().filter((m) => m.method === 'session/new').length
+    const retry = await spawn(run, 'fake/model-a')
+    await until('the retry prompt', () => run.sent().some((m) => m.method === 'session/prompt'))
+    assert.strictEqual(run.sent().filter((m) => m.method === 'session/new').length, before) // no second session/new
+    assert.strictEqual((run.provider as any).parked.size, 0)
+  } finally {
+    run.stop()
+  }
+})
+
+test('a shell command announced as a pending other call is shown as a command from its start', async () => {
+  const run = fake('grok-shell.json')
+  try {
+    const session = await spawn(run, 'fake/model-a')
+    await done(session)
+    const kinds = session.events.map((e) => e.type)
+    assert.ok(kinds.includes('command_started'))
+    assert.ok(kinds.includes('command_completed'))
+    assert.ok(!kinds.includes('tool_started')) // not a bare "run_terminal_command" tool
+    const started = find(session, 'command_started')
+    const completed = find(session, 'command_completed')
+    assert.strictEqual(started.command, 'git status')
+    assert.strictEqual(completed.itemId, started.itemId)
+    assert.strictEqual(completed.status, 'completed')
+  } finally {
+    run.stop()
+  }
+})
+
+test('long thinking is released line by line while the turn runs, and the closing text stays whole', async () => {
+  const run = fake('slow-thought.json')
+  try {
+    const session = await spawn(run, 'fake/model-a')
+    await until('the first thought line', () => session.events.some((e) => e.type === 'reasoning'))
+    assert.ok(!session.events.some((e) => e.type === 'turn_completed')) // still running
+    assert.strictEqual(find(session, 'reasoning').text, 'First line of thought.')
+    await done(session)
+    const thoughts = session.events.filter((e) => e.type === 'reasoning').map((e: any) => e.text)
+    assert.deepStrictEqual(thoughts, ['First line of thought.', 'Second line, still going and finished.'])
+    assert.strictEqual(find(session, 'turn_completed').finalText, 'Done.')
+  } finally {
+    run.stop()
+  }
+})

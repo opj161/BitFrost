@@ -595,6 +595,9 @@ function serve() {
         const provider = providers.get(def.harness)
         if (!provider) return json(res, 404, { error: `${def.harnessName} is not available` })
         const session = new Session({ id: '', harness: def.harness, agent: def.name, model: def.model, effort: effort ?? null, cwd: body.cwd, state: 'idle', title: typeof body.title === 'string' ? body.title : null, leaseId: body.leaseId, claudeSession: body.claudeSession ?? null, claudeAgent: body.claudeAgent ?? null, parentMode: body.parentMode ?? null }, store)
+        // The host gives up on a slow start; a session it never hears about must not run on unseen.
+        let gone = false
+        res.once('close', () => { if (!res.writableFinished) gone = true })
         const id = await provider.spawnSession(session, {
           model: def.model,
           cwd: body.cwd,
@@ -606,6 +609,16 @@ function serve() {
           title: typeof body.title === 'string' ? body.title : undefined,
         })
         log(`session ${id} agent=${def.name} model=${def.model} effort=${effort ?? '-'} cwd=${body.cwd}`)
+        if (gone) {
+          log(`session ${id}: its start request ended first; stopping it`)
+          session.info.closedAt = Date.now()
+          session.info.closeReason = 'its start request ended'
+          session.save()
+          void session.stop(provider, 'host').finally(() => {
+            try { provider.disposeSession?.(session); session.detach() } catch {}
+          })
+          return
+        }
         table.add(session, body.leaseId)
         return json(res, 200, { id, model: def.model, effort: effort ?? null })
       }

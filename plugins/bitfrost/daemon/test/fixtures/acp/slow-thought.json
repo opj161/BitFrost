@@ -1,0 +1,104 @@
+{
+ "_note": "Long thinking that streams over time before the turn ends.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      }
+     ]
+    },
+    {
+     "id": "effort",
+     "name": "Effort",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "medium",
+     "options": [
+      {
+       "value": "low",
+       "name": "low"
+      },
+      {
+       "value": "medium",
+       "name": "medium"
+      },
+      {
+       "value": "high",
+       "name": "high"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_thought_chunk",
+     "messageId": "r1",
+     "content": {
+      "type": "text",
+      "text": "First line of thought.\nSecond line, still going"
+     }
+    }
+   },
+   {
+    "delay": 2600
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_thought_chunk",
+     "messageId": "r1",
+     "content": {
+      "type": "text",
+      "text": " and finished."
+     }
+    }
+   },
+   {
+    "delay": 200
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "Done."
+     }
+    }
+   }
+  ]
+ ]
+}

@@ -131,6 +131,40 @@ test('a lapsed lease whose host already has a newer one moves its sessions over'
   assert.deepStrictEqual(disposed, [])
 })
 
+test('a newer lease from the same host takes over a running session at once, and the old one lapsing does not interrupt it', async () => {
+  const { table, session, advance, interrupted, disposed } = setup()
+  table.addLease('L1', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  session('a', 'L1', true)
+  advance(LEASE_TTL_MS / 3)
+  table.addLease('L2', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  assert.strictEqual(table.leaseIdOf('a'), 'L2')
+
+  advance(LEASE_TTL_MS) // L1 lapses, L2 has not been renewed past it
+  table.renew('L2')
+  advance(LEASE_TTL_MS / 2)
+  assert.strictEqual(table.leases.has('L1'), false)
+  assert.strictEqual(table.leases.has('L2'), true)
+  assert.deepStrictEqual(interrupted, [])
+  assert.deepStrictEqual(disposed, [])
+  assert.strictEqual(table.leaseIdOf('a'), 'L2')
+})
+
+test('releasing a superseded lease leaves the sessions that moved to the newer one alone', () => {
+  const { table, session, interrupted, disposed } = setup()
+  table.addLease('L1', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  session('a', 'L1', true)
+  session('b', 'L1')
+  table.addLease('L2', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  table.release('L1')
+  assert.deepStrictEqual(interrupted, [])
+  assert.deepStrictEqual(disposed, [])
+  assert.deepStrictEqual([...table.sessions.keys()].sort(), ['a', 'b'])
+})
+
+test('a lease lapses only after a stall far longer than the host renewal period', () => {
+  assert.ok(LEASE_TTL_MS >= 60_000)
+})
+
 test('renewing keeps a lease; closing an unknown session is refused', () => {
   const { table, session, advance } = setup()
   table.addLease('L1', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })

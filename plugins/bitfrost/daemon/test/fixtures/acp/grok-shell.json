@@ -1,0 +1,132 @@
+{
+ "_note": "Scripted like Grok: a shell command announced as a pending other call named for the tool, then upgraded to execute.",
+ "initialize": {
+  "protocolVersion": 1,
+  "agentCapabilities": {
+   "loadSession": false,
+   "sessionCapabilities": {
+    "close": {}
+   }
+  },
+  "authMethods": [
+   {
+    "id": "fake-login",
+    "name": "Log in",
+    "description": "Run `fake login`"
+   }
+  ],
+  "agentInfo": {
+   "name": "fake-acp",
+   "version": "1.0.0"
+  }
+ },
+ "newSession": {
+  "result": {
+   "sessionId": "ses_1",
+   "configOptions": [
+    {
+     "id": "model",
+     "name": "Model",
+     "category": "model",
+     "type": "select",
+     "currentValue": "fake/model-a",
+     "options": [
+      {
+       "value": "fake/model-a",
+       "name": "fake/model-a"
+      }
+     ]
+    },
+    {
+     "id": "effort",
+     "name": "Effort",
+     "category": "thought_level",
+     "type": "select",
+     "currentValue": "medium",
+     "options": [
+      {
+       "value": "low",
+       "name": "low"
+      },
+      {
+       "value": "medium",
+       "name": "medium"
+      },
+      {
+       "value": "high",
+       "name": "high"
+      }
+     ]
+    }
+   ]
+  }
+ },
+ "turns": [
+  [
+   {
+    "update": {
+     "sessionUpdate": "agent_thought_chunk",
+     "messageId": "r1",
+     "content": {
+      "type": "text",
+      "text": "Checking the repo."
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call",
+     "toolCallId": "call_sh",
+     "title": "run_terminal_command",
+     "kind": "other",
+     "status": "pending",
+     "rawInput": {
+      "command": "git status",
+      "description": "Show status"
+     }
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_sh",
+     "status": "in_progress",
+     "kind": "execute",
+     "title": "git status"
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "tool_call_update",
+     "toolCallId": "call_sh",
+     "status": "completed",
+     "kind": "execute",
+     "title": "git status",
+     "rawOutput": {
+      "output": "clean",
+      "exit_code": 0
+     },
+     "content": [
+      {
+       "type": "content",
+       "content": {
+        "type": "text",
+        "text": "clean"
+       }
+      }
+     ]
+    }
+   },
+   {
+    "update": {
+     "sessionUpdate": "agent_message_chunk",
+     "messageId": "m1",
+     "content": {
+      "type": "text",
+      "text": "All clean."
+     }
+    }
+   }
+  ]
+ ]
+}

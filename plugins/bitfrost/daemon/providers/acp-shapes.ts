@@ -25,6 +25,9 @@ export type ToolCall = {
 export const FILE_KINDS = new Set(['edit', 'delete', 'move'])
 
 export const blankTool = (): ToolCall => ({ kind: 'other', title: '', name: null, rawInput: {}, rawOutput: undefined, content: [], locations: [], status: 'pending', started: false, done: false })
+// Some apps announce a shell command before they know its kind, as a pending "other" call named for the tool.
+const SHELL_TOOLS = /^(run_terminal_command|run_shell_command|bash|shell)$/i
+export const isShellTool = (t: ToolCall): boolean => (t.kind === 'other' || !t.kind) && [t.name, t.title].some((x) => SHELL_TOOLS.test((x ?? '').trim()))
 export const objectOf = (v: Json): Json => (v && typeof v === 'object' && !Array.isArray(v) ? v : {})
 const str = (v: Json): string | undefined => (typeof v === 'string' && v ? v : undefined)
 export const isSelect = (category: string) => (o: Json) =>
