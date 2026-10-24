@@ -1875,7 +1875,9 @@ async function* replayStep($, e, next, st, ctl) {
     let events
     let state
     try {
-      ;({ events, state } = await daemon($, 'GET', `/sessions/${st.sessionId}/events?after=${st.cursor}&waitMs=${POLL_MS}`))
+      // Wake when held text is due, so it does not wait out a whole poll behind a quiet agent.
+      const waitMs = st.held ? Math.min(POLL_MS, Math.max(100, HOLD_MS - (Date.now() - st.held.at))) : POLL_MS
+      ;({ events, state } = await daemon($, 'GET', `/sessions/${st.sessionId}/events?after=${st.cursor}&waitMs=${waitMs}`))
       failures = 0
     } catch (err) {
       if (++failures <= 2) {
