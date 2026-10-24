@@ -10,6 +10,8 @@ export type { HarnessModel }
 
 export type AgentDef = HarnessModel & {
   name: string
+  // Names this agent had before names were shortened, so saved and resumed subagents still find it.
+  legacy?: string[]
   aliases: string[]
   family: string
   harnessName: string
@@ -36,6 +38,26 @@ export function selectModels(found: HarnessModel[], ownVendors: Map<string, stri
 export function globMatch(pattern: string, value: string): boolean {
   const re = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
   return new RegExp(`^${re}$`, 'i').test(value)
+}
+
+// Words that name a tier of a model rather than the model itself ("Flash", "Fast", "Free").
+const TIERS = new Set(['flash', 'fast', 'free', 'mini', 'pro', 'lite', 'max', 'turbo', 'preview', 'plus', 'nano', 'contributor', 'instant'])
+// A company prefix that every model of an app shares ("GPT-6.1-Sol" is Sol).
+const COMPANY_PREFIXES = new Set(['gpt'])
+const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+
+// The words of a display name that make a short agent name: no version, no trailing tier, no company prefix.
+function shortWords(displayName: string): { words: string[]; tier: string[] } {
+  const words = displayName
+    .replace(/\(.*?\)/g, ' ')
+    .split(/[-\s]+/)
+    .filter(Boolean)
+    .map((w) => w.toLowerCase())
+    .filter((w) => !/^v?\d+(\.\d+)*$/.test(w))
+  const tier: string[] = []
+  while (words.length > 1 && TIERS.has(words[words.length - 1])) tier.unshift(words.pop()!)
+  if (words.length > 1 && COMPANY_PREFIXES.has(words[0])) words.shift()
+  return { words, tier }
 }
 
 export function agentName(model: string): string {
@@ -94,10 +116,29 @@ export function buildAgents(models: HarnessModel[], ownVendors: Map<string, stri
       if (vendor) claim(`${vendor}${version} ${family}`)
     }
     for (const bare of bareNames(m)) if (newest.get(bare) === m) claim(bare)
-    let name = agentName(m.model)
+    // The shortest name that is free: "sol" for the newest Sol, "sol6" for an older one, "glm-opencode" for
+    // the same model through another app, and the full model id as the last resort.
+    const long = agentName(m.model)
+    const { words, tier } = shortWords(m.displayName)
+    const base = slug(words.join(' '))
+    const full = slug([...words, ...tier].join(' '))
+    const ver = version ? slug(version) : ''
+    const owns = bareNames(m).some((b) => newest.get(b) === m)
+    const again = models.some((o) => o !== m && o.displayName === m.displayName)
+    const tries = [
+      ...(owns ? [base] : again ? [`${base}-${m.harness}`] : []),
+      ...(tier.length ? [full] : []), // "grok-fast" beside "grok"
+      ...(ver ? [`${base}${ver}`] : []),
+      full,
+      ...(ver ? [`${full}${ver}`] : []),
+      `${base}-${m.harness}`,
+      long,
+    ].filter((n) => n && n.length <= 64)
+    let name = tries.find((n) => !taken.has(n)) ?? long
     while (taken.has(name)) name = `${name}-${m.harness}`
     taken.add(name)
-    defs.set(m, { ...m, name, aliases: [...aliases], family, harnessName: m.harnessName ?? m.harness })
+    const legacy = [long, `${long}-${m.harness}`].filter((n) => n !== name)
+    defs.set(m, { ...m, name, legacy, aliases: [...aliases], family, harnessName: m.harnessName ?? m.harness })
   }
   return models.map((m) => defs.get(m)!)
 }

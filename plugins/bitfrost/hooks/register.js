@@ -63,6 +63,8 @@ let renewal = null // the lease timer
 let setupRetry = null // the timer that tries to connect again after a failed start
 let live = false // between this session's start and its own end
 const agents = new Map()
+// An agent by its name, or by one it had before names were shortened, so saved and resumed subagents still find it.
+const agentNamed = (name) => agents.get(name) ?? [...agents.values()].find((d) => d.legacy?.includes(name))
 const foreign = new Map() // agent id to subagent state
 const notOurs = new Set() // agent ids the store has no record of
 const restoring = new Map() // agent id to a pending restore
@@ -838,7 +840,7 @@ async function ensureAttached($, st) {
 
 // Rebuilds a subagent this process doesn't know, from its record, after Claude Code restarted.
 async function restore($, agentId, rec) {
-  const def = agents.get(rec.agent)
+  const def = agentNamed(rec.agent)
   const st = newState(def ?? fallbackDef(rec.agent), { ...rec, lastInputAt: rec.inputRows, cursor: rec.lastSeq })
   st.restoredHanded = !!rec.handed
   st.queuedBaseline = rec.queuedBaseline === true
@@ -885,7 +887,7 @@ async function lookUp($, agentId) {
   if (readError) return unsure(`BitFrost could not read its saved state for this subagent (${readError}). Try again.`)
   if (!ours) return null // no record and no type to go by: ask again next time
   // Spawned but never started before a restart.
-  const def = agents.get(name)
+  const def = agentNamed(name)
   const st = newState(def ?? fallbackDef(name), {})
   if (!def) st.broken = `BitFrost no longer offers ${name}, so this subagent can't continue.`
   foreign.set(agentId, st)
@@ -1116,7 +1118,7 @@ async function sessionAgents($) {
       if (!key.startsWith('agent:') || foreign.has(key.slice(6))) continue
       const rec = await $.store.get(key)
       if (!rec?.agent || rec.claudeSession !== claudeSession) continue
-      list.push({ agentId: key.slice(6), st: null, def: agents.get(rec.agent) ?? fallbackDef(rec.agent), sessionId: rec.sessionId, name: rec.name, at: rec.createdAt ?? 0 })
+      list.push({ agentId: key.slice(6), st: null, def: agentNamed(rec.agent) ?? fallbackDef(rec.agent), sessionId: rec.sessionId, name: rec.name, at: rec.createdAt ?? 0 })
     }
   } catch {}
   return list.sort((a, b) => a.at - b.at)
@@ -1135,7 +1137,7 @@ async function resolveAgent($, ref) {
   try {
     rec = await $.store.get(`agent:${want}`)
   } catch {}
-  if (rec?.agent) return { agentId: want, st: null, def: agents.get(rec.agent) ?? fallbackDef(rec.agent), sessionId: rec.sessionId, name: rec.name }
+  if (rec?.agent) return { agentId: want, st: null, def: agentNamed(rec.agent) ?? fallbackDef(rec.agent), sessionId: rec.sessionId, name: rec.name }
   const known = list.map((a) => `${a.agentId} (${a.def.displayName})`).join(', ')
   throw new Error(`No BitFrost subagent matches "${want}". ${known ? `This session has: ${known}.` : 'This session has none yet.'}`)
 }
@@ -1466,7 +1468,7 @@ export const register = (on) => {
 
   on('agent.spawn', async ($, e, next) => {
     const [owner, name] = e.subagentType.split(':')
-    let def = name && e.provider?.plugin?.split('@')[0] === owner ? agents.get(name) : undefined
+    let def = name && e.provider?.plugin?.split('@')[0] === owner ? agentNamed(name) : undefined
     if (!def) return next(e)
     $.ui.log(`bitfrost: spawning ${e.subagentType} (parent mode ${e.permissionMode})`, { to: 'debug' })
     // Start the app now: its handshake runs while the task is handed over, not after.

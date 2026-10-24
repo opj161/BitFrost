@@ -1969,3 +1969,19 @@ test('status says when a subagent is blocked on a permission or a question', { t
   expect(detail).toContain('Blocked: waiting for permission to run npm test')
   expect(detail).toContain('The user is being asked')
 })
+
+test('a subagent type with the name an agent had before is still run, under its short name', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.agentsReply = { agents: [{ ...SOL, name: 'sol6', legacy: ['gpt-6-sol', 'gpt-6-sol-codex'] }], nameTable: NAME_TABLE, at: 1 }
+  await start($)
+  expect(w.registered.map((r) => r.name)).toEqual(['sol6'])
+
+  // A resumed subagent still carries the type it was started with.
+  await spawn($, 'fix the parser') // subagentType: bitfrost:gpt-6-sol
+  expect(w.bottomSpawns.at(-1).subagentType).toBe('bitfrost:sol6')
+  // The old names stay hidden in the agent list; only the short one is offered.
+  const offered = (name: string) =>
+    $.agent.offer({ agent: `bitfrost:${name}`, description: '', source: 'plugin', provider: { plugin: 'bitfrost@local', tier: 'user' } } as any)
+  expect(await offered('sol6')).toEqual({ isOffered: true })
+  expect(await offered('gpt-6-sol')).toEqual({ isOffered: false })
+})

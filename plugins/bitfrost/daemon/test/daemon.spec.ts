@@ -164,9 +164,9 @@ test('a lease is given only to an allowed profile', async () => {
 test('the fake Codex model is listed as an agent', async () => {
   const r = await call('GET', '/agents')
   assert.strictEqual(r.status, 200)
-  assert.deepStrictEqual(r.body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.deepStrictEqual(r.body.agents.map((a: any) => a.name), ['test'])
   assert.match(r.body.agents[0].description, /GPT-Test, OpenAI's model gpt-test/)
-  assert.match(r.body.nameTable, /bitfrost:gpt-test/)
+  assert.match(r.body.nameTable, /bitfrost:test/)
   assert.match(r.body.nameTable, /make the prompt self-contained/) // how these differ from native subagents
 })
 
@@ -203,7 +203,7 @@ test('a session runs one turn with an approval, then DELETE lets it go', async (
   assert.strictEqual(events.at(-1).finalText, 'It listed the directory: 2 entries.')
 
   const listed = await call('GET', '/sessions')
-  assert.deepStrictEqual(listed.body.sessions, [{ id, agent: 'gpt-test', harness: 'codex', model: 'gpt-test', state: 'idle', leaseId }])
+  assert.deepStrictEqual(listed.body.sessions, [{ id, agent: 'test', harness: 'codex', model: 'gpt-test', state: 'idle', leaseId }])
   assert.deepStrictEqual((await call('GET', '/status')).body.sessions, listed.body.sessions)
 
   assert.strictEqual((await call('DELETE', `/sessions/${id}`)).status, 200)
@@ -295,7 +295,7 @@ test('a config change shows in /agents without ?refresh=1', async () => {
 
   writeConfig(goodConfig())
   const back = await call('GET', '/agents')
-  assert.deepStrictEqual(back.body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.deepStrictEqual(back.body.agents.map((a: any) => a.name), ['test'])
 })
 
 test('a lease renewal says when the model list changed and rebuilds a stale one', async () => {
@@ -309,7 +309,7 @@ test('a lease renewal says when the model list changed and rebuilds a stale one'
   assert.deepStrictEqual((await call('GET', '/agents')).body.agents, [])
 
   writeConfig(goodConfig())
-  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['test'])
   assert.strictEqual((await call('DELETE', `/leases/${lease}`)).status, 200)
 })
 
@@ -327,7 +327,7 @@ test('an invalid config.json refuses leases with 503 and shows in /health', asyn
     assert.strictEqual(lease.body.error, health.body.configError)
     assert.strictEqual((await call('GET', '/status')).body.configError, health.body.configError)
     // The last good config stays in use meanwhile.
-    assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+    assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['test'])
   }
   assert.strictEqual(daemonLog().match(/config: .*providers\.codex\.enabled must be/g)?.length, 1)
 
@@ -365,12 +365,12 @@ test('an app updated on disk is restarted and its new models listed', async () =
     fs.writeFileSync(bin, `#!/bin/sh\nBITFROST_FAKE_EXTRA_MODELS='${extra}' exec '${process.execPath}' '${FAKE}' "$@"\n`, { mode: 0o755 })
   install('')
   writeConfig(goodConfig({ bin }))
-  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['test'])
 
   install('gpt-newer')
   await until(
     'the new model to be listed',
-    async () => (await call('GET', '/agents')).body.agents.some((a: any) => a.name === 'gpt-newer'),
+    async () => (await call('GET', '/agents')).body.agents.some((a: any) => a.name === 'newer'),
     15_000,
   )
   assert.match(daemonLog(), /provider codex: its app changed on disk; restarting it/)
@@ -399,7 +399,7 @@ test('a stopped session rehydrates from BITFROST_DATA_DIR and resumes the same C
   assert.equal((await call('POST',`/sessions/${id}/attach`,{ leaseId:'missing' })).status,403)
   assert.equal((await call('POST','/sessions/nope/attach',{ leaseId:renewed })).status,404)
   const attached = await call('POST',`/sessions/${id}/attach`,{ leaseId:renewed,claudeSession:'restored-lead' })
-  assert.deepEqual(attached.body,{ ok:true,state:'detached',lastSeq:beforeSeq,agent:'gpt-test',model:'gpt-test',effort:'high' })
+  assert.deepEqual(attached.body,{ ok:true,state:'detached',lastSeq:beforeSeq,agent:'test',model:'gpt-test',effort:'high' })
   assert.equal((await call('POST',`/sessions/${id}/input`,{ text:'continue' })).body.delivery,'started')
   await until('resumed approval',async () => (await call('GET',`/sessions/${id}/approvals`)).body.approvals[0])
   const sent = fs.readFileSync(sentLog,'utf8').trim().split('\n').map((l) => JSON.parse(l))
@@ -425,6 +425,19 @@ test('an unfinished persisted turn ends with daemon_restart after a hard daemon 
   assert.equal((await call('GET',`/sessions/${id}/messages`)).body.turns[0].reason,'daemon_restart')
 })
 
+test('a session starts by the short agent name or by the name it had before', async () => {
+  const listed = (await call('GET', '/agents')).body.agents
+  assert.deepStrictEqual(listed.map((a: any) => [a.name, a.legacy]), [['test', ['gpt-test', 'gpt-test-codex']]])
+  for (const agent of ['test', 'gpt-test']) {
+    const lease = await newLease(`host-names-${agent}`)
+    const r = await call('POST', '/sessions', { leaseId: lease, agent, cwd: work, prompt: 'list the directory', canAskUser: true })
+    assert.strictEqual(r.status, 200, `${agent}: ${JSON.stringify(r.body)}`)
+    assert.strictEqual((await call('GET', `/sessions/${r.body.id}`)).body.agent, 'test')
+    assert.strictEqual((await call('DELETE', `/leases/${lease}`)).status, 200)
+    await until('the helper to be idle', async () => (await call('GET', '/health')).body.busy === false)
+  }
+})
+
 test('POST /providers/:id/warm starts the app ahead of a task, and an unknown one is refused', async () => {
   const warm = await call('POST', '/providers/codex/warm')
   assert.strictEqual(warm.status, 200)
@@ -446,7 +459,7 @@ test('/providers/:id/models shows every model and why one is not offered', async
   const on = await call('GET', '/providers/codex/models')
   assert.strictEqual(on.status, 200)
   const [m] = on.body.models
-  assert.deepStrictEqual([m.model, m.enabled, m.offered, m.reason, m.agent], ['gpt-test', true, true, null, 'gpt-test'])
+  assert.deepStrictEqual([m.model, m.enabled, m.offered, m.reason, m.agent], ['gpt-test', true, true, null, 'test'])
   assert.strictEqual(on.body.pending, false)
 
   const logFrom = daemonLog().length
@@ -458,7 +471,7 @@ test('/providers/:id/models shows every model and why one is not offered', async
   assert.doesNotMatch(daemonLog().slice(logFrom), /provider codex: config changed/)
 
   writeConfig(goodConfig())
-  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['gpt-test'])
+  assert.deepStrictEqual((await call('GET', '/agents')).body.agents.map((a: any) => a.name), ['test'])
   const zcode = (await call('GET', '/providers/zcode/models')).body
   assert.deepStrictEqual(zcode.models, [])
   assert.match(zcode.error, /ZCode/)

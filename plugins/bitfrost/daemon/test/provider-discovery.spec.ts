@@ -76,7 +76,7 @@ test('missing enabled apps use asynchronous, cached login-shell discovery', asyn
   await call('GET', '/providers')
   assert.equal(fs.readFileSync(lookups, 'utf8'), count, 'negative detection is cached across listings')
 
-  await until(async () => (await call('GET', '/agents')).body.agents?.some((a: any) => a.name === 'gpt-test'))
+  await until(async () => (await call('GET', '/agents')).body.agents?.some((a: any) => a.name === 'test'))
   const initial = (await call('GET', '/subagents')).body
   const leaseId = (await call('POST', '/leases', { host: 'test', profile, hostSessionId: 'discovery' })).body.leaseId
   const created = await call('POST', '/sessions', { leaseId, agent: 'gpt-test', cwd: root, prompt: 'finish quickly', canAskUser: true })

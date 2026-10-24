@@ -142,7 +142,7 @@ test('a model through another app is offered, but its own app keeps the name and
     m('gemini', 'Google', 'gemini-3-pro', 'Gemini 3 Pro'),
   ], own)
   const [viaOpencode, viaOmp, zcode, gemini] = agents
-  assert.deepStrictEqual([viaOpencode.name, viaOmp.name, zcode.name, gemini.name], ['opencode-go-glm-5-3', 'gemini-3-pro-omp', 'glm-5-3', 'gemini-3-pro'])
+  assert.deepStrictEqual([viaOpencode.name, viaOmp.name, zcode.name, gemini.name], ['glm-opencode', 'gemini-omp', 'glm', 'gemini'])
   assert.ok(zcode.aliases.includes('glm') && zcode.aliases.includes('glm5.3'), zcode.aliases.join())
   assert.ok(gemini.aliases.includes('gemini pro') && gemini.aliases.includes('gemini3 pro'), gemini.aliases.join())
   assert.deepStrictEqual([viaOpencode.aliases, viaOmp.aliases], [[], []])
@@ -229,4 +229,20 @@ test('loadConfig reports pending handback only when its key is missing and confi
   assert.equal(warned.error, null)
   assert.deepEqual(warned.warnings, [`${file}: unknown key typo`])
   assert.deepEqual(warned.newSettings, ['handback', ...demos])
+})
+
+test('agent names are short: the newest of a family takes the bare name, older and tiered ones add what tells them apart', () => {
+  const m = (harness: string, provider: string, model: string, displayName: string) => ({ harness, harnessName: harness, provider, model, displayName, description: '', efforts: [], defaultEffort: null, isDefault: false })
+  const own = new Map([['codex', 'OpenAI'], ['grok', 'xAI']])
+  const agents = buildAgents([
+    m('codex', 'OpenAI', 'gpt-6.1-sol', 'GPT-6.1-Sol'), m('codex', 'OpenAI', 'gpt-6-sol', 'GPT-6-Sol'), m('codex', 'OpenAI', 'gpt-5.6-sol', 'GPT-5.6-Sol'),
+    m('codex', 'OpenAI', 'gpt-6-luna', 'GPT-6-Luna'), m('grok', 'xAI', 'grok-4.7', 'Grok 4.7'), m('grok', 'xAI', 'grok-4.7-build-fast', 'Grok 4.7 Fast'),
+    m('opencode', 'opencode-go', 'opencode-go/beam-free', 'Beam Free'), m('opencode', 'DeepSeek', 'opencode-go/deepseek-v4.1-flash', 'DeepSeek V4.1 Flash'),
+    m('opencode', 'opencode-go', 'opencode-go/muse-spark-1.3-contributor', 'Muse Spark 1.3 Contributor'),
+  ], own)
+  assert.deepStrictEqual(agents.map((a) => a.name), ['sol', 'sol6', 'sol5-6', 'luna', 'grok', 'grok-fast', 'beam', 'deepseek', 'muse-spark'])
+  assert.strictEqual(new Set(agents.map((a) => a.name)).size, agents.length)
+  // The names these agents had before still find them, for saved and resumed subagents.
+  assert.deepStrictEqual(agents.map((a) => a.legacy![0]).slice(0, 2), ['gpt-6-1-sol', 'gpt-6-sol'])
+  assert.ok(agents.every((a) => /^[a-z0-9][a-z0-9_-]*$/.test(a.name) && a.name.length <= 64))
 })

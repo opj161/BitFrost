@@ -596,7 +596,7 @@ function serve() {
       if (req.method === 'POST' && url.pathname === '/sessions') {
         const body = await readBody(req)
         if (!body.leaseId || !table.leases.has(body.leaseId)) return json(res, 403, { error: 'a valid lease is required' })
-        const def = registry?.agents.find((a) => a.name === body.agent)
+        const def = registry?.agents.find((a) => a.name === body.agent) ?? registry?.agents.find((a) => a.legacy?.includes(body.agent))
         if (!def) return json(res, 404, { error: `unknown agent ${body.agent}` })
         const effort = body.effort && def.efforts.includes(body.effort) ? body.effort : (def.defaultEffort ?? undefined)
         const provider = providers.get(def.harness)
