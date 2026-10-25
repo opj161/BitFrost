@@ -61,3 +61,28 @@ store.close();`
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dbVersion: DB_VERSION }))
   run()
 })
+
+test('the plugin folder carries its own package.json, kept in step with the root one', () => {
+  // Claude Code caches only plugins/bitfrost, and a Claude profile folder may hold a CommonJS package.json above the cache.
+  const root = JSON.parse(fs.readFileSync(new URL('../../../../package.json', import.meta.url), 'utf8'))
+  const own = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
+  assert.equal(own.type, 'module')
+  assert.equal(own.dbVersion, root.dbVersion)
+  assert.equal(root.type, 'module')
+})
+
+test('a plugin folder copied alone under a CommonJS package starts, as Claude Code caches it', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bitfrost-cache-copy-'))
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+  // ~/.claude/package.json is {"type":"commonjs"}; the cache lives below it.
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"commonjs"}')
+  const copy = path.join(dir, 'plugins', 'cache', 'bitfrost', 'bitfrost', 'x.y.z')
+  fs.mkdirSync(path.dirname(copy), { recursive: true })
+  fs.cpSync(new URL('../..', import.meta.url), copy, { recursive: true, filter: (src) => !src.includes(`${path.sep}migrations${path.sep}build`) })
+  const run = spawnSync(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(copy, 'daemon', 'bitfrostd.ts'), 'socket'], {
+    encoding: 'utf8',
+    env: { ...process.env, XDG_RUNTIME_DIR: dir, BITFROST_DATA_DIR: path.join(dir, 'data') },
+  })
+  assert.equal(run.status, 0, run.stderr)
+  assert.match(run.stdout.trim(), /bitfrostd\.sock$/)
+})

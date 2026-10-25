@@ -1,0 +1,7 @@
+{
+  "name": "bitfrost-plugin",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-only",
+  "dbVersion": 8
+}
