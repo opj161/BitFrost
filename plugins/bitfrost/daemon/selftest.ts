@@ -215,6 +215,13 @@ async function runOne(factory: ProviderFactory, config: Config, agentName?: stri
       ],
       ['no wrong-model error', wrongModel.length === 0, short(wrongModel.map((e) => e.error ?? '').join('; '))],
       ['the final reply contains a number', /\d/.test(finalText), `"${short(finalText)}"`],
+      // Providers that ask for everything must ask at least once here: silence
+      // means the permission path is broken, not that the model was polite.
+      [
+        'the permission path was exercised',
+        allowed + denied > 0 || provider.capabilities.gates !== 'all',
+        allowed + denied > 0 ? `${allowed} allowed, ${denied} denied` : 'no approval was requested',
+      ],
     ]
 
     console.log()
@@ -224,8 +231,7 @@ async function runOne(factory: ProviderFactory, config: Config, agentName?: stri
       ok &&= pass
       console.log(`  ${pass ? 'PASS' : 'FAIL'}  ${name}${detail ? ` (${detail})` : ''}`)
     }
-    if (allowed + denied > 0) console.log(`  PASS  approvals: ${allowed} allowed, ${denied} denied`)
-    else console.log('  NOTE  no approval was requested, so the permission path was not exercised')
+    if (provider.capabilities.gates !== 'all' && allowed + denied === 0) console.log('  NOTE  no approval was requested, so the permission path was not exercised')
     if (ok) return { code: 0, why: agent.name }
     const [failed] = checks.find(([, pass]) => !pass)!
     return { code: 1, why: `${agent.name}: ${failed} failed${done?.error ? `; ${short(done.error)}` : ''}` }

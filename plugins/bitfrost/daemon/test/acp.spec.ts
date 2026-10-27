@@ -470,7 +470,10 @@ test('the agent table: overlays, env and vendors', () => {
   assert.deepStrictEqual(launch(opencode).args, ['acp'])
   const permission = JSON.parse(launch(opencode).env.OPENCODE_PERMISSION)
   assert.deepStrictEqual([permission.bash, permission.edit, permission.webfetch, permission.task], ['ask', 'ask', 'ask', 'deny'])
-  assert.deepStrictEqual(JSON.parse(launch(opencode).env.OPENCODE_CONFIG_CONTENT), { permission })
+  const content = JSON.parse(launch(opencode).env.OPENCODE_CONFIG_CONTENT)
+  assert.deepStrictEqual(content.permission, permission)
+  const byAction = Object.fromEntries(content.permissions.map((r: any) => [r.action, r.effect]))
+  assert.deepStrictEqual(byAction, { edit: 'ask', shell: 'ask', webfetch: 'ask', websearch: 'ask', grep: 'ask', glob: 'ask', external_directory: 'ask', subagent: 'deny' })
   assert.strictEqual(opencode.vendor, undefined)
 
   const omp = ompProvider.create(env('/opt/omp')) as AcpProvider
@@ -620,6 +623,70 @@ test('a denial followed by refusal reports permission_denied and preserves the d
     await done(s)
     assert.equal(find(s, 'turn_completed').reason, 'permission_denied')
     assert.equal(find(s, 'turn_completed').error, 'Do not run it.')
+  } finally { run.stop() }
+})
+
+test('a denial followed by cancel reports permission_denied (opencode v2 rejects by cancelling)', async (t) => {
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE, 'fixtures', 'acp', 'opencode-reject.json'), 'utf8'))
+  const change = (value: any) => {
+    if (!value || typeof value !== 'object') return
+    if (value.stopReason === 'end_turn') value.stopReason = 'cancelled'
+    for (const child of Object.values(value)) change(child)
+  }
+  change(scenario)
+  const run = fake(scenarioFile(t, scenario))
+  try {
+    const s = await spawn(run, 'opencode-go/deepseek-v4-flash')
+    await until('approval', () => !!find(s, 'approval_requested'))
+    run.provider.resolveApproval(s, find(s, 'approval_requested').approvalId, 'deny', 'Do not run it.')
+    await done(s)
+    assert.equal(find(s, 'turn_completed').reason, 'permission_denied')
+    assert.equal(find(s, 'turn_completed').error, 'Do not run it.')
+    assert.equal(find(s, 'turn_completed').status, 'interrupted')
+  } finally { run.stop() }
+})
+
+test('opencode child-session updates are ignored but their permissions stay gated', async (t) => {
+  const child = { 'opencode/child-session': { id: 'ses_child', parentID: 'ses_1', depth: 1, title: 'Child' } }
+  const file = scenarioFile(t, { turns: [[
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Child chatter.' }, _meta: child } },
+    { update: { sessionUpdate: 'tool_call', toolCallId: 'ses_child:call_1', title: 'Child: read', kind: 'read', status: 'in_progress', locations: [], rawInput: { path: '/w/x.txt' }, _meta: child } },
+    {
+      ask: 'session/request_permission',
+      params: {
+        sessionId: '$SESSION',
+        toolCall: { toolCallId: 'ses_child:call_9', title: 'ls', kind: 'execute', status: 'pending', locations: [], rawInput: { command: 'ls' }, _meta: child },
+        options: [
+          { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+          { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+        ],
+      },
+      then: { reject_once: [{ respond: { stopReason: 'cancelled' } }] },
+    },
+    { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Parent summary.' } } },
+  ]] })
+  const run = fake(file)
+  try {
+    const s = await spawn(run, 'auto-gemini-3')
+    await until('approval', () => !!find(s, 'approval_requested'))
+    assert.deepStrictEqual([find(s, 'approval_requested').title, find(s, 'approval_requested').tool], ['run `ls`', 'Bash'])
+    run.provider.resolveApproval(s, find(s, 'approval_requested').approvalId, 'deny', 'Do not run it.')
+    await done(s)
+    const texts = s.events.filter((e) => e.type === 'text').map((e: any) => e.text)
+    assert.deepStrictEqual(texts, ['Parent summary.'])
+    assert.ok(!s.events.some((e) => e.type === 'tool_started' || e.type === 'tool_completed'))
+    assert.equal(find(s, 'turn_completed').reason, 'permission_denied')
+  } finally { run.stop() }
+})
+
+test('the build agent is pinned when the directory defaults to another mode', async (t) => {
+  const scenario = JSON.parse(fs.readFileSync(path.join(HERE, 'fixtures', 'acp', 'models.json'), 'utf8'))
+  scenario.newSession.result.configOptions.find((o: any) => o.id === 'mode').currentValue = 'plan'
+  const run = fake(scenarioFile(t, scenario))
+  try {
+    await spawn(run, 'opencode-go/deepseek-v4-flash', 'high')
+    const sets = run.sent().filter((m) => m.method === 'session/set_config_option').map((m) => [m.params.configId, m.params.value])
+    assert.deepStrictEqual(sets, [['model', 'opencode-go/deepseek-v4-flash'], ['effort', 'high'], ['mode', 'build']])
   } finally { run.stop() }
 })
 

@@ -395,6 +395,18 @@ export class AcpProvider implements Provider {
       if (choicesOf(level).some((c) => c.value === effort)) await this.setOption(acpId, level.id, effort, session)
       else this.log(`${this.id}: ${model} has no thought level ${effort}; keeping ${level.currentValue}`)
     }
+    // Pin the build agent: a user's default_agent (e.g. plan) would otherwise
+    // neuter the session without asking. Best effort; never fail a spawn over it.
+    const mode = options.find((o: Json) => o?.type === 'select' && o?.category === 'mode')
+    if (mode && mode.currentValue !== 'build') {
+      if (choicesOf(mode).some((c) => c.value === 'build')) {
+        try {
+          await this.setOption(acpId, mode.id, 'build', session)
+        } catch (e) {
+          this.log(`${this.id}: could not select the build agent: ${(e as Error).message}`)
+        }
+      } else this.log(`${this.id}: no build agent offered; keeping ${mode.currentValue}`)
+    }
     return picker.id
   }
 
@@ -640,8 +652,14 @@ export class AcpProvider implements Provider {
       : turn.cancelled || stop === 'cancelled' ? 'interrupted'
       : stop === 'end_turn' ? 'completed'
       : 'failed'
-    const denied = stop !== 'end_turn' && !turn.cancelled && !turn.wrongModel && turn.denied && Date.now() - turn.denied.at <= 2000 ? turn.denied : null
-    const reason: EndReason = turn.wrongModel ? 'wrong_model' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : denied ? 'permission_denied' : error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
+    // v2 cancels the prompt when a permission is rejected (v1 ended the turn),
+    // so a recent denial must win over the cancelled branch. `denied` already
+    // excludes turns BitFrost cancelled itself, keeping interrupt/restart
+    // intact while the status stays honestly cancelled. The window absorbs the
+    // cancel round-trip on a loaded machine; it cannot leak across turns
+    // because denials live on the finished turn object.
+    const denied = stop !== 'end_turn' && !turn.cancelled && !turn.wrongModel && turn.denied && Date.now() - turn.denied.at <= 10_000 ? turn.denied : null
+    const reason: EndReason = turn.wrongModel ? 'wrong_model' : denied ? 'permission_denied' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
     const why = turn.wrongModel
       ? `${this.displayName} switched to ${turn.wrongModel} instead of ${st.model}; stopped it`
       : (denied?.reason ?? error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
@@ -655,6 +673,14 @@ export class AcpProvider implements Provider {
     const st = this.byAcpId.get(p.sessionId)
     const u = p.update ?? {}
     if (!st) return
+    // Child-session updates come from opencode's own subagents, which BitFrost
+    // denies. If they ever arrive (a user config widened the deny), never replay
+    // them as the parent's tools. Permission requests and questions from child
+    // sessions still reach onPermission/onElicitation and stay gated.
+    if (u?._meta?.['opencode/child-session'] ?? p?._meta?.['opencode/child-session']) {
+      this.log(`${this.id}: ignoring child-session update ${u.sessionUpdate ?? 'unknown'} (opencode subagents stay disabled)`)
+      return
+    }
     if (u.sessionUpdate === 'config_option_update') return this.checkModel(st, u.configOptions)
     const turn = st.turn
     if (!turn) return
@@ -794,6 +820,7 @@ export class AcpProvider implements Provider {
     if (!st.canAsk) return this.reply(rpcId, { outcome: permissionOutcome(options, 'deny') })
     // Merge known inputs because permission requests can omit tool details.
     const call = p.toolCall ?? {}
+    if (call?._meta?.['opencode/child-session']) this.log(`${this.id}: permission from an opencode child session (subagents stay disabled)`)
     const known = st.turn?.tools.get(String(call.toolCallId))
     const t: ToolCall = {
       ...(known ?? blankTool()),

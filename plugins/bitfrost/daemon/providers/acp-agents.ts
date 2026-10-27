@@ -21,21 +21,39 @@ const OPENCODE_PERMISSION = {
   task: 'deny',
 }
 
+// Native v2 shape of the same gates. V1 and V2 fields may coexist in
+// OPENCODE_CONFIG_CONTENT and the native array wins on conflict. `bash` is
+// now `shell`, `task` is now `subagent`, and v1 `codesearch` is now the `grep`
+// and `glob` tools (`doom_loop` has no v2 action). OPENCODE_PERMISSION is
+// ignored by v2, so this array carries the gates there; the V1 block above
+// covers older versions.
+const OPENCODE_PERMISSIONS = [
+  { action: 'edit', resource: '*', effect: 'ask' },
+  { action: 'shell', resource: '*', effect: 'ask' },
+  { action: 'webfetch', resource: '*', effect: 'ask' },
+  { action: 'websearch', resource: '*', effect: 'ask' },
+  { action: 'grep', resource: '*', effect: 'ask' },
+  { action: 'glob', resource: '*', effect: 'ask' },
+  { action: 'external_directory', resource: '*', effect: 'ask' },
+  { action: 'subagent', resource: '*', effect: 'deny' },
+]
+
 export const OPENCODE: AcpAgentSpec = {
   id: 'opencode',
   displayName: 'opencode',
   vendor: null,
   binary: 'opencode',
   args: ['acp'],
-  // OPENCODE_PERMISSION overrides config; the content form covers older versions.
+  // OPENCODE_PERMISSION covers older versions; the content form below carries
+  // both shapes so v1 and v2 binaries stay gated.
   env: {
     OPENCODE_PERMISSION: JSON.stringify(OPENCODE_PERMISSION),
-    OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: OPENCODE_PERMISSION }),
+    OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: OPENCODE_PERMISSION, permissions: OPENCODE_PERMISSIONS }),
   },
   loginCommand: 'opencode auth login',
   optIn: true,
   gates: 'all',
-  note: "Serves many companies' models, named provider/model. Denying a request ends opencode's turn. An agent's own `permission` block in the user's opencode config still applies on top.",
+  note: "Serves many companies' models, named provider/model. Denying a request ends opencode's turn. A user's own opencode config can still widen these ask-gates.",
 }
 
 // Grok Build's native ACP host. It uses the logged-in grok account and native
