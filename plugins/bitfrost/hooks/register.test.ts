@@ -200,6 +200,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     return { value: e.as === 'api' ? (w.api[e.agentId ?? ''] ?? []) : (w.rows[e.agentId ?? ''] ?? []) }
   })
   on('agent.register', ($: any, e: any) => {
+    if ((fake as any).refuseAgents?.includes(e.name)) throw new Error(`agent refused: ${e.name}`)
     w.registered.push(e)
     return { value: { agent: e.name } }
   })
@@ -389,6 +390,71 @@ test('with no models to offer, the helper\'s hint reaches the user', { timeoutMs
   expect(said).toHaveLength(1)
   expect(said[0].text).toContain(hint)
   expect(w.registered).toEqual([])
+})
+
+test('a turn that starts with no models reconnects and registers them', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  // Start model-less (as a crashed session would be), then heal the helper.
+  w.fake.agentsReply = { agents: [], nameTable: '', at: 1, hint: 'turn something on' }
+  await start($)
+  expect(w.registered).toEqual([])
+
+  w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
+  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  expect(w.registered.map((r: any) => r.name)).toEqual(['gpt-6-sol'])
+  expect(context.blocks.map((b: any) => b.name)).toEqual(['base', 'bitfrostModels'])
+  expect(context.blocks[1].text).toBe(NAME_TABLE)
+})
+
+test('turns with models present never re-run discovery', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const agentsCalls = () => w.calls.filter((c) => c.path === '/agents').length
+  const before = agentsCalls()
+  await $.prompt.context({ blocks: [] } as any)
+  await $.prompt.context({ blocks: [] } as any)
+  expect(agentsCalls()).toBe(before)
+})
+
+test('a failed recovery schedules a retry instead of stalling the turn', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  // Clear the recovery flag the earlier test set, without touching the models.
+  await w.clock.advance(15_000)
+  w.fake.agentsReply = { agents: [], nameTable: '', at: 1, hint: 'turn something on' }
+  await start($)
+  expect(w.registered).toEqual([])
+
+  // The helper is down: the turn still builds, and a retry is pending.
+  w.fake.healthFailure = 'transport'
+  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  expect(context.blocks.map((b: any) => b.name)).toEqual(['base'])
+  const healthCalls = () => w.calls.filter((c) => c.path === '/health').length
+  const before = healthCalls()
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  expect(healthCalls()).toBe(before)
+
+  // The helper comes back; the scheduled retry registers the models.
+  w.fake.healthFailure = null
+  w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
+  await w.clock.advance(15_000)
+  await w.clock.settle()
+  expect(w.registered.map((r: any) => r.name)).toEqual(['gpt-6-sol'])
+
+  // Leave the file's shared state as the earlier tests did: no models, at 1.
+  w.fake.agentsReply = { agents: [], nameTable: '', at: 1 }
+  const registeredBefore = w.registered.length
+  await start($)
+  expect(w.registered).toHaveLength(registeredBefore)
+})
+
+test('one refused agent does not cost the rest', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  ;(w.fake as any).refuseAgents = ['gpt-6-sol']
+  const other = { ...SOL, name: 'other', description: 'Other model for long tasks', aliases: ['other'] }
+  w.fake.agentsReply = { agents: [SOL, other], nameTable: NAME_TABLE, at: 1 }
+  await start($)
+  expect(w.registered.map((r: any) => r.name)).toEqual(['other'])
+  expect(w.uiLogs.some((l) => l.to === 'debug' && l.text.includes('could not register gpt-6-sol'))).toBe(true)
 })
 
 // Delivers the handback in a step's chunks, then runs the closing step after it.

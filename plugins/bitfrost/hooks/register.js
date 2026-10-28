@@ -58,6 +58,9 @@ let leaseArgs = null
 let nameTable = null // short model names, added to each prompt
 let agentsAt = 0 // when the helper last built its model list
 let syncing = false
+let savedProfile = null // this session's Claude profile, for reconnects outside session.start
+let recovering = false // a model recovery is due to run; cleared on a 15 s timer so turns stay quiet
+let emptyNoticed = false // the empty-model hint, logged once per model-less stretch
 let claudeSession = null
 let renewal = null // the lease timer
 let setupRetry = null // the timer that tries to connect again after a failed start
@@ -194,19 +197,27 @@ async function syncAgents($) {
   for (const name of agents.keys()) if (!names.has(name)) agents.delete(name)
   for (const def of found) {
     if (JSON.stringify(agents.get(def.name)) === JSON.stringify(def)) continue
-    await $.agent.register({
-      name: def.name,
-      description: def.description,
-      // Only the handback step runs on a Claude model; see handbackModel.
-      prompt:
-        'You relay the report of an agent that ran in another app through BitFrost. ' +
-        'When asked to call SubagentHandback, pass your last message as its message, word for word, with nothing added or left out. ' +
-        'Do not call any other tool.',
-      model: modelLabel(def), // only a label; Claude never calls it
-      tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'],
-    })
+    try {
+      await $.agent.register({
+        name: def.name,
+        description: def.description,
+        // Only the handback step runs on a Claude model; see handbackModel.
+        prompt:
+          'You relay the report of an agent that ran in another app through BitFrost. ' +
+          'When asked to call SubagentHandback, pass your last message as its message, word for word, with nothing added or left out. ' +
+          'Do not call any other tool.',
+        model: modelLabel(def), // only a label; Claude never calls it
+        tools: ['Bash', 'Read', 'Edit', 'Write', 'Grep', 'Glob'],
+      })
+    } catch (err) {
+      // One refused or invalid def must not cost the rest (a stale copy's calls
+      // all refuse; those throw below through the empty map instead).
+      await debug($, `bitfrost: could not register ${def.name} (${err.message})`)
+      continue
+    }
     agents.set(def.name, def)
   }
+  if (found.length && !agents.size) throw new Error('no models could be registered')
   agentsAt = at
   if (table !== nameTable) {
     nameTable = table
@@ -222,7 +233,10 @@ async function connect($, profile) {
   await acquireLease($)
   keepLease($)
   const { found, hint } = await syncAgents($)
-  if (!found.length && hint) $.ui.log(`BitFrost: no models to offer. ${hint}`)
+  if (!found.length && hint) {
+    emptyNoticed = true
+    $.ui.log(`BitFrost: no models to offer. ${hint}`)
+  }
   try {
     await registerTools($)
   } catch (err) {
@@ -244,6 +258,37 @@ function retryConnect($, profile, attempt) {
       if (err.status !== 403) retryConnect($, profile, attempt + 1)
     })
   })
+}
+
+// Reconnects a session whose start never registered the models, without waiting
+// for the next session. Registration calls are valid any time from the loaded
+// module copy (only a stale copy's calls refuse); session.start merely used to
+// be the only caller.
+async function recoverModels($) {
+  if (!claudeSession) claudeSession = await $.session.id()
+  if (!savedProfile) {
+    const home = (await $.env.get('HOME')) ?? ''
+    savedProfile = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${home}/.claude`
+  }
+  await ensureDaemon($)
+  if (!leaseId) {
+    leaseArgs = { host: 'claude-code', profile: savedProfile, hostSessionId: claudeSession }
+    await acquireLease($)
+    keepLease($)
+  }
+  const { found, hint } = await syncAgents($)
+  if (!found.length && hint && !emptyNoticed) {
+    emptyNoticed = true
+    $.ui.log(`BitFrost: no models to offer. ${hint}`)
+  }
+  if (found.length) {
+    emptyNoticed = false
+    try {
+      await registerTools($)
+    } catch (err) {
+      await debug($, `bitfrost: could not register the status, messages and send tools (${err.message})`)
+    }
+  }
 }
 
 // Check in so the helper stays up while this session is open.
@@ -1401,6 +1446,8 @@ export const register = (on) => {
     toldConfigError = false
     toldNewSettings = false
     toldProfile = false
+    emptyNoticed = false
+    savedProfile = profile
     // A new session has none of our agent types yet; stored subagents come back on use.
     agents.clear()
     agentsAt = 0
@@ -1426,6 +1473,23 @@ export const register = (on) => {
 
   // Tell the model which short name is which subagent.
   on('prompt.context', async ($, e, next) => {
+    // A crash or a failed start can leave this session without models while the
+    // helper is healthy (registration otherwise only runs at session start).
+    // Recover here so the models are back before Claude picks subagent types.
+    // The flag clears on a timer (not per turn) so a healthy-but-empty setup
+    // costs one quiet check per window, and a dead helper falls back to the
+    // bounded retries instead of stalling every turn. Ended sessions stay
+    // quiet: their agents were dropped on purpose.
+    if (live && !agents.size && !syncing && !setupRetry && !recovering) {
+      recovering = true
+      $.clock.after(SETUP_RETRY_MS, () => {
+        recovering = false
+      })
+      await recoverModels($).catch((err) => {
+        void debug($, `bitfrost: model recovery failed (${err.message})`)
+        if (savedProfile) retryConnect($, savedProfile, 1)
+      })
+    }
     const r = await next(e)
     if (!nameTable) return r
     const blocks = [...r.blocks.filter((b) => b.name !== 'bitfrostModels' && b.name !== 'bitfrostTools'), { name: 'bitfrostModels', text: nameTable }]
