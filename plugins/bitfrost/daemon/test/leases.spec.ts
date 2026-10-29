@@ -203,8 +203,26 @@ test('attach rebinds a held or closing session and persists its new owner', asyn
   assert.equal(table.get('a'),s)
 })
 
-test('detached loads are cached across requests and expire only when unowned and unused', () => {
-  let now = Date.now()
+test('silence only abandons a session whose host is gone; a live host gets an hour', () => {
+  const { table, session } = setup()
+  table.addLease('L1', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  const live = session('live', 'L1', true)
+  // Twenty silent minutes with a renewing host: nothing to stop.
+  live.lastSeenAt = 1_000_000 - 20 * 60_000
+  assert.deepStrictEqual(table.unattended(1_000_000, 90_000), [])
+  // Past the hour: unattended, but the host is still here.
+  live.lastSeenAt = 1_000_000 - 61 * 60_000
+  assert.deepStrictEqual(table.unattended(1_000_000, 90_000).map((f) => [f.session.info.id, f.hostGone]), [['live', false]])
+  // No lease at all: the old 90 s horizon still applies.
+  const orphan = session('orphan', 'L1', true)
+  orphan.info.leaseId = null
+  orphan.lastSeenAt = 1_000_000 - 91_000
+  assert.deepStrictEqual(table.unattended(1_000_000, 90_000).map((f) => [f.session.info.id, f.hostGone]).sort(), [['live', false], ['orphan', true]])
+  orphan.lastSeenAt = 1_000_000 - 89_000
+  assert.deepStrictEqual(table.unattended(1_000_000, 90_000).map((f) => f.session.info.id), ['live'])
+})
+
+test('detached loads are cached across requests and expire only when unowned and unused', () => {  let now = Date.now()
   const table = new SessionTable(() => undefined, () => {}, () => now)
   let reads = 0
   const store = { load: (id: string) => { reads++; return { info: { id, harness: 'fake', agent: 'test', model: 'm', cwd: '/tmp', state: 'detached' }, events: [], lastSeq: 0, nativeRef: null } }, saveSession: () => {} } as any

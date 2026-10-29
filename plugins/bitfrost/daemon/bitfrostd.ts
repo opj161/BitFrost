@@ -750,10 +750,9 @@ function serve() {
     const now = Date.now()
     table.tick()
     leasesChanged()
-    for (const s of table.running()) {
-      if (now - s.lastSeenAt < ABANDONED_MS) continue
-      log(`session ${s.info.id}: its subagent stopped asking about it; stopping it`)
-      s.lastSeenAt = now // Limit interrupts to one per 90 seconds.
+    for (const { session: s, hostGone } of table.unattended(now, ABANDONED_MS)) {
+      log(`session ${s.info.id}: ${hostGone ? 'its subagent stopped asking about it' : 'unattended for an hour'}; stopping it`)
+      s.lastSeenAt = now // Limit interrupts to one window each.
       void s.stop(providerFor(s), 'abandoned')
     }
     if (!discovering && [...providers.values()].some((p) => !busy(p.id) && updated(p))) void discover()

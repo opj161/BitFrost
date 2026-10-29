@@ -13,6 +13,11 @@ import type { Store } from './store.ts'
 // Longer than a stalled host (a loaded machine, a laptop waking) needs to renew, and no longer than the 90 s a session may go unpolled.
 export const LEASE_TTL_MS = 90_000
 export const HOLD_MS = 5 * 60_000
+// Silence from a session whose host is still here. Crash cleanup rides on
+// lease expiry (a dead host stops renewing within 90 s) instead of on
+// silence, so patient hosts — slow approvals, check-back-later long tasks —
+// are only a backstop against wedged providers away from being stopped.
+export const UNATTENDED_MS = 60 * 60_000
 
 export type Lease = { host: string; profile: string; hostSessionId: string; expires: number }
 
@@ -129,6 +134,19 @@ export class SessionTable {
   // Include removed sessions until they stop, so shutdown still sees them.
   running(): Session[] {
     return [...this.sessions.values(), ...this.closing].filter((s) => (s.info.state === 'running' || s.info.state === 'stopping'))
+  }
+
+  // Sessions silent past their horizon, with why: fast when the host is gone
+  // (its lease is missing or held by nobody), patient when the host is still
+  // here but looking elsewhere.
+  unattended(now: number, abandonedMs: number): { session: Session; hostGone: boolean }[] {
+    const out: { session: Session; hostGone: boolean }[] = []
+    for (const s of this.running()) {
+      const hostGone = s.info.leaseId == null || !this.leases.has(s.info.leaseId)
+      if (now - s.lastSeenAt < (hostGone ? abandonedMs : UNATTENDED_MS)) continue
+      out.push({ session: s, hostGone })
+    }
+    return out
   }
 
   summaries(): SessionSummary[] {

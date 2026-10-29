@@ -196,6 +196,8 @@ Yes. Ask "what is glm doing?". Claude checks BitFrost for the current step, rece
 
 Yes, through Claude. Codex models take the message inside their current turn. GLM, opencode and Grok Build models get it when their turn ends. If it can't wait, ask Claude to interrupt: the subagent stops its current step and carries on in the same conversation with your message. Claude is told which of these happened.
 
+A subagent keeps working for up to an hour without being watched; only a session whose Claude host is gone is stopped after about 90 seconds. If a turn ends while its app still runs (for example a long command cut off this way), check the app's own output files before restarting it.
+
 ### Can I resume a subagent after restarting Claude?
 
 Yes. Reopen the conversation and ask Claude to continue it. It picks up in the same conversation inside its app. For opencode this only works if your opencode version can reopen sessions.
