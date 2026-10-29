@@ -39,6 +39,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
     leaseReply: null as { status: number; body: any } | null, // null: a healthy lease
     renewalReply: null as { status: number; body: any } | null,
     agentsReply: { agents: [SOL], nameTable: NAME_TABLE, at: 1 } as { agents: any[]; nameTable: string; at: number; hint?: string },
+    agentsFailure: false, // every GET /agents answers 500 while true
     reviewReply: { isAnswered: true, text: 'ALLOW\nroutine work for the task.', usage: { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
     queue: [] as Scripted[],
     inputReply: null as any, // null: started
@@ -137,7 +138,12 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
       if (fake.renewalReply) ({ status, body: reply } = fake.renewalReply)
       else reply = { ok: true, agentsAt: fake.agentsReply.at }
     }
-    else if (path === '/agents') reply = fake.agentsReply
+    else if (path === '/agents') {
+      if (fake.agentsFailure) {
+        status = 500
+        reply = { error: 'unavailable' }
+      } else reply = fake.agentsReply
+    }
     else if (path === '/sessions' && fake.sessionFailures > 0) {
       fake.sessionFailures--
       status = 500
@@ -455,6 +461,46 @@ test('one refused agent does not cost the rest', { timeoutMs: 20000 }, async ($,
   await start($)
   expect(w.registered.map((r: any) => r.name)).toEqual(['other'])
   expect(w.uiLogs.some((l) => l.to === 'debug' && l.text.includes('could not register gpt-6-sol'))).toBe(true)
+})
+
+test('an agent step with no models reconnects too', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.agentsReply = { agents: [], nameTable: '', at: 1, hint: 'turn something on' }
+  await start($)
+  expect(w.registered).toEqual([])
+
+  w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
+  const s = await step($, '', 0)
+  expect(w.registered.map((r: any) => r.name)).toEqual(['gpt-6-sol'])
+  expect(textsOf(s.chunks)).toEqual(['bottom step'])
+})
+
+test('status without models says what the helper offers and why sync failed', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  const status = (id: string) => $.tool.call({ tool: 'mcp__bitfrost__status', tool_use_id: id } as any)
+  // Clear the previous test's recovery timer; the renewal this fires is quiet.
+  w.fake.agentsReply = { agents: [], nameTable: '', at: 1, hint: 'turn something on' }
+  await w.clock.advance(15_000)
+  await start($)
+  expect(w.registered).toEqual([])
+
+  // The helper is healthy but offers nothing.
+  expect(await status('st-0')).toEqual({ result: 'No BitFrost subagents in this session yet. The helper offers no models right now.' })
+
+  // The helper is down: the status names it instead of staying silent.
+  w.fake.agentsFailure = true
+  w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  expect(await status('st-0')).toEqual({ result: 'No BitFrost subagents in this session yet. The helper could not be reached (bitfrostd GET /agents: 500 unavailable).' })
+
+  // The helper is back and offers a model this session never registered.
+  w.fake.agentsFailure = false
+  expect(await status('st-0')).toEqual({ result: 'No BitFrost subagents in this session yet. The helper offers 1 model but this session registered none. Last sync failed: bitfrostd GET /agents: 500 unavailable.' })
+
+  // The scheduled retry heals it from here.
+  await w.clock.advance(15_000)
+  await w.clock.settle()
+  expect(w.registered.map((r: any) => r.name)).toEqual(['gpt-6-sol'])
 })
 
 // Delivers the handback in a step's chunks, then runs the closing step after it.

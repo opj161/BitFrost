@@ -143,7 +143,7 @@ Run `bitfrost uninstall`. It lists what it will remove and asks whether to remov
 ### No BitFrost models in Claude
 
 - Start a new Claude session. If no model can be offered, it shows a BitFrost note saying why.
-- If a crash left the session without models, they come back on the next turn once the helper is reachable.
+- If a crash left the session without models, they come back on the next turn once the helper is reachable. The status tool says what the helper offers and why the session missed it.
 - Check `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS` is `"1"` in the `env` block of your Claude profile's `settings.json` (`~/.claude/settings.json` by default).
 - Run `bitfrost status` to see which apps were found and how many models each offers.
 

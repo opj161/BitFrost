@@ -61,6 +61,7 @@ let syncing = false
 let savedProfile = null // this session's Claude profile, for reconnects outside session.start
 let recovering = false // a model recovery is due to run; cleared on a 15 s timer so turns stay quiet
 let emptyNoticed = false // the empty-model hint, logged once per model-less stretch
+let lastSyncError = null // why the last model sync failed, for the status tool
 let claudeSession = null
 let renewal = null // the lease timer
 let setupRetry = null // the timer that tries to connect again after a failed start
@@ -192,7 +193,16 @@ async function startRemote($, body) {
 
 // Registers new or changed models and forgets dropped ones, which agent.offer then hides.
 async function syncAgents($) {
-  const { agents: found, nameTable: table, at, hint } = await daemon($, 'GET', '/agents')
+  let found
+  let table
+  let at
+  let hint
+  try {
+    ;({ agents: found, nameTable: table, at, hint } = await daemon($, 'GET', '/agents'))
+  } catch (err) {
+    lastSyncError = err.message
+    throw err
+  }
   const names = new Set(found.map((def) => def.name))
   for (const name of agents.keys()) if (!names.has(name)) agents.delete(name)
   for (const def of found) {
@@ -217,7 +227,11 @@ async function syncAgents($) {
     }
     agents.set(def.name, def)
   }
-  if (found.length && !agents.size) throw new Error('no models could be registered')
+  if (found.length && !agents.size) {
+    lastSyncError = 'no models could be registered'
+    throw new Error('no models could be registered')
+  }
+  lastSyncError = null
   agentsAt = at
   if (table !== nameTable) {
     nameTable = table
@@ -289,6 +303,21 @@ async function recoverModels($) {
       await debug($, `bitfrost: could not register the status, messages and send tools (${err.message})`)
     }
   }
+}
+
+// Heals a session whose start never registered the models, on any turn that
+// begins without them. Ended sessions stay quiet: their agents were dropped
+// on purpose.
+async function maybeRecover($) {
+  if (!live || agents.size || syncing || setupRetry || recovering) return
+  recovering = true
+  $.clock.after(SETUP_RETRY_MS, () => {
+    recovering = false
+  })
+  await recoverModels($).catch((err) => {
+    void debug($, `bitfrost: model recovery failed (${err.message})`)
+    if (savedProfile) retryConnect($, savedProfile, 1)
+  })
 }
 
 // Check in so the helper stays up while this session is open.
@@ -1284,7 +1313,10 @@ function messagesText(a, r) {
 async function statusTool($, args) {
   if (!args.agent) {
     const list = await sessionAgents($)
-    if (!list.length) return 'No BitFrost subagents in this session yet.'
+    if (!list.length) {
+      if (agents.size) return 'No BitFrost subagents in this session yet.'
+      return 'No BitFrost subagents in this session yet.' + await modelStatus($)
+    }
     const lines = await Promise.all(
       list.map(async (a) => {
         if (!a.sessionId) return `- ${a.agentId}: ${a.def.displayName}, not started yet`
@@ -1301,6 +1333,21 @@ async function statusTool($, args) {
   if (!a.sessionId) return `${a.def.displayName} (agent ${a.agentId}) has not started yet.`
   const s = await daemon($, 'GET', `/sessions/${a.sessionId}/summary?turns=${intIn(args.turns, 1, 20, 1)}`)
   return summaryText(a, s)
+}
+
+// Why this session has no models, in one line for the status tool: whether the
+// helper is unreachable, offers nothing, or offers models this session never
+// registered (with the last sync error when there is one).
+async function modelStatus($) {
+  let offered = null
+  try {
+    offered = (await daemon($, 'GET', '/agents')).agents.length
+  } catch (err) {
+    return ` The helper could not be reached (${err.message}).`
+  }
+  if (!offered) return ' The helper offers no models right now.'
+  const why = lastSyncError ? ` Last sync failed: ${lastSyncError}.` : ' They should re-register on the next turn.'
+  return ` The helper offers ${offered} model${offered === 1 ? '' : 's'} but this session registered none.${why}`
 }
 
 async function messagesTool($, args) {
@@ -1480,16 +1527,7 @@ export const register = (on) => {
     // costs one quiet check per window, and a dead helper falls back to the
     // bounded retries instead of stalling every turn. Ended sessions stay
     // quiet: their agents were dropped on purpose.
-    if (live && !agents.size && !syncing && !setupRetry && !recovering) {
-      recovering = true
-      $.clock.after(SETUP_RETRY_MS, () => {
-        recovering = false
-      })
-      await recoverModels($).catch((err) => {
-        void debug($, `bitfrost: model recovery failed (${err.message})`)
-        if (savedProfile) retryConnect($, savedProfile, 1)
-      })
-    }
+    await maybeRecover($)
     const r = await next(e)
     if (!nameTable) return r
     const blocks = [...r.blocks.filter((b) => b.name !== 'bitfrostModels' && b.name !== 'bitfrostTools'), { name: 'bitfrostModels', text: nameTable }]
@@ -1603,6 +1641,8 @@ export const register = (on) => {
   })
 
   on('turn.step', async function* ($, e, next) {
+    // Background agents churn through steps without user turns; heal here too.
+    await maybeRecover($)
     const st = await stateOf($, e.agentId)
     if (!st) return yield* next(e)
     const ctl = { settled: false }
