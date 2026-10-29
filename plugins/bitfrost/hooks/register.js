@@ -1159,6 +1159,16 @@ function statusLine(st) {
   return `⚠ ${st.def.displayName}'s turn ended: ${END_REASONS[st.endReason] ?? st.endReason}${detail ? ` (${detail})` : ''}.`
 }
 
+// Why a turn BitFrost itself stopped ended, when the bare reason misleads.
+// Lead- or user-initiated stops say nothing: the pane already shows those.
+function interruptWhy(st) {
+  if ((st.endReason ?? 'end_turn') !== 'interrupted') return ''
+  const tail = 'The app may still be finishing its current step — check its output before restarting it.'
+  if (st.interruptedBy === 'abandoned') return `BitFrost stopped the turn: its session went unwatched for a while. ${tail}`
+  if (st.interruptedBy === 'lease') return `BitFrost stopped the turn: its Claude session went away. ${tail}`
+  return ''
+}
+
 const clip = (text, n) => {
   const t = String(text ?? '').replace(/\s+/g, ' ').trim()
   return t.length > n ? `${t.slice(0, n - 1)}…` : t
@@ -1876,8 +1886,9 @@ async function* replayStep($, e, next, st, ctl) {
     const where = st.sessionId ? `, BitFrost session ${st.sessionId}` : ''
     const ended = `Ended: ${reason}${st.endCode ? ` (code ${st.endCode})` : ''}`
     const partial = reason === 'end_turn' ? '' : '\nThe turn did not finish, so the text below is partial.'
+    const why = interruptWhy(st)
     // Once the relay showed a report, that exact report is the one handed back.
-    const input = { message: st.relay?.message ?? `Report from ${st.def.displayName} (bitfrost:${st.def.name}, agent ${e.agentId}${where})\n${ended}${partial}\n\n${message}` }
+    const input = { message: st.relay?.message ?? `Report from ${st.def.displayName} (bitfrost:${st.def.name}, agent ${e.agentId}${where})\n${ended}${partial}${why ? `\n${why}` : ''}\n\n${message}` }
     // Show the report and end the turn. Claude Code nudges for the handback, and a Claude model answers it.
     if (!st.relay) {
       const relay = apiText.length <= RELAY_MAX_CHARS ? await handbackModel($) : null
@@ -1908,6 +1919,8 @@ async function* replayStep($, e, next, st, ctl) {
   const closingText = function* () {
     const reason = st.endReason ?? 'end_turn'
     if (reason !== 'end_turn' && !st.ownFailure) yield say(statusLine(st))
+    const why = interruptWhy(st)
+    if (why) yield say(why)
     if (st.finalText && lastText !== st.finalText) yield say(st.finalText)
   }
   // Hands this step to the Claude model the handback setting picked.
@@ -2001,6 +2014,7 @@ async function* replayStep($, e, next, st, ctl) {
   if (newInput) {
     st.lastInputAt = rows.length
     st.finalText = st.endReason = st.endCode = st.endError = null
+    st.interruptedBy = null
     st.relay = null
     st.ownFailure = false
     try {
@@ -2182,6 +2196,12 @@ async function* replayStep($, e, next, st, ctl) {
         st.pendingInputs.delete(ev.inputId)
         st.acked.add(ev.inputId)
         yield say('⚠ A queued message was dropped before it started.')
+      } else if (ev.type === 'interrupt_requested') {
+        // Remember why, for the closing: only abandonment and a lapsed lease
+        // ever need explaining, and interruptWhy says nothing otherwise.
+        st.interruptedBy = ev.source
+      } else if (ev.type === 'turn_started') {
+        st.interruptedBy = null
       } else if (ev.type === 'question_asked') {
         if (!PARENT_AUTO_MODES.has(st.parentMode ?? '')) {
           for (const line of yield* askUserQuestions($, st, ev, nextIndex, next.signal)) yield say(line)

@@ -1310,6 +1310,36 @@ test('the hand-back says why a turn ended and marks a cut-short report partial',
   expect(s2.result.answer).toContain('All of it is done.')
 })
 
+test('an interrupted turn says when BitFrost stopped it for going unwatched', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const a = await agentOver($, w, [
+    { type: 'interrupt_requested', seq: 1, source: 'abandoned' },
+    { type: 'turn_completed', seq: 2, status: 'interrupted', reason: 'interrupted', finalText: 'Cut short.' },
+  ])
+  const s = await step($, a, 0)
+  expect(textsOf(s.chunks)).toContain("⚠ GPT-6-Sol's turn ended: it was interrupted.")
+  expect(textsOf(s.chunks).join('\n')).toContain('went unwatched for a while')
+  expect(textsOf(s.chunks)).toContain('Cut short.')
+
+  const b = await agentOver($, w, [
+    { type: 'interrupt_requested', seq: 1, source: 'lease' },
+    { type: 'turn_completed', seq: 2, status: 'interrupted', reason: 'interrupted', finalText: 'Cut short.' },
+  ], { withHandback: true })
+  const s2 = await step($, b, 0)
+  expect(handbackOf(s2.chunks)).toContain('its Claude session went away')
+
+  // A new turn clears a previous turn's cause even when it ends interrupted too.
+  const c = await agentOver($, w, [
+    { type: 'interrupt_requested', seq: 1, source: 'abandoned' },
+    { type: 'turn_started', seq: 2, turnId: 't2' },
+    { type: 'turn_completed', seq: 3, status: 'interrupted', reason: 'interrupted', finalText: 'Second.' },
+  ])
+  const s3 = await step($, c, 0)
+  expect(textsOf(s3.chunks).join('\n')).not.toContain('unwatched')
+  expect(textsOf(s3.chunks)).toContain('Second.')
+})
+
 test('the status, messages and send tools find an agent by id, session id or name', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)

@@ -170,7 +170,7 @@ export function nameTable(all: AgentDef[]): string {
     'Models from other companies that you can hand work to as subagents (via bitfrost). When the user names one of these, use exactly the matching subagent type. To set its reasoning effort ("sol6 on high"), make the first line of the prompt "effort: <level>".',
     ...rows,
     'These run in their own app, not in this conversation: they see only the prompt you give them and the project folder, so make the prompt self-contained. ' +
-      'They use their own tools, not yours (no MCP tools or skills of this session). Their permission requests go to the user, or to a safety review in auto mode. ' +
+      'They use their own tools, not yours: nothing from this session (no MCP tools, skills or context of yours) reaches them, though their own app brings whatever it has configured. Their permission requests go to the user, or to a safety review in auto mode. ' +
       'The final report comes back like a native subagent\'s; follow up with SendMessage, or read what one is doing with the bitfrost status and messages tools.',
   ].join('\n')
 }
