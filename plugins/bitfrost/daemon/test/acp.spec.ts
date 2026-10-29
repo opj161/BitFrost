@@ -626,6 +626,31 @@ test('a denial followed by refusal reports permission_denied and preserves the d
   } finally { run.stop() }
 })
 
+test('a usage update carries the window size, spend and live gauge', async (t) => {
+  const file = scenarioFile(t, { turns: [[
+    { update: { sessionUpdate: 'usage_update', used: 12000, size: 200000, cost: { amount: 0.012, currency: 'USD' } } },
+    { respond: { stopReason: 'end_turn', usage: { inputTokens: 12000, outputTokens: 42, totalTokens: 12042 } } },
+  ], [
+    { update: { sessionUpdate: 'usage_update', used: 5000, size: 0, cost: { amount: 'x' } } },
+    { respond: { stopReason: 'end_turn', usage: { inputTokens: 5000, outputTokens: 7, totalTokens: 5007 } } },
+  ]] })
+  const run = fake(file)
+  try {
+    const s = await spawn(run, 'auto-gemini-3')
+    await done(s)
+    const usage = s.events.filter((e) => e.type === 'usage') as any[]
+    assert.deepStrictEqual(usage.map((e) => [e.inputTokens, e.outputTokens, e.contextSize]), [[12000, 0, 200000], [12000, 42, 200000]])
+    assert.deepStrictEqual(usage.map((e) => e.cost), [{ amount: 0.012, currency: 'USD' }, { amount: 0.012, currency: 'USD' }])
+    assert.deepStrictEqual(s.usageGauge, { used: 12000, size: 200000, cost: { amount: 0.012, currency: 'USD' } })
+    // Malformed window and spend fall back to null without touching the gauge.
+    assert.equal(await run.provider.sendInput(s, 'again'), 'started')
+    await done(s, 2)
+    const second = s.events.filter((e) => e.type === 'usage').slice(2) as any[]
+    assert.deepStrictEqual(second.map((e) => [e.inputTokens, e.outputTokens, e.contextSize, e.cost]), [[5000, 0, null, null], [5000, 7, null, null]])
+    assert.deepStrictEqual(s.usageGauge, { used: 12000, size: 200000, cost: { amount: 0.012, currency: 'USD' } })
+  } finally { run.stop() }
+})
+
 test('a denial followed by cancel reports permission_denied (opencode v2 rejects by cancelling)', async (t) => {
   const scenario = JSON.parse(fs.readFileSync(path.join(HERE, 'fixtures', 'acp', 'opencode-reject.json'), 'utf8'))
   const change = (value: any) => {

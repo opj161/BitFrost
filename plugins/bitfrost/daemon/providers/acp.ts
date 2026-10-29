@@ -91,6 +91,8 @@ type Turn = {
   finalText: string
   tools: Map<string, ToolCall>
   lastUsed: number | null
+  lastSize: number | null
+  lastCost: { amount: number; currency: string } | null
   denied: { at: number; reason: string } | null
 }
 
@@ -584,7 +586,7 @@ export class AcpProvider implements Provider {
   }
 
   private runTurn(st: State, text: string) {
-    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, flushTimer: null, items: 0, finalText: '', tools: new Map(), lastUsed: null, denied: null }
+    const turn: Turn = { id: `acp_${randomUUID()}`, cancelled: false, wrongModel: null, chunk: null, flushTimer: null, items: 0, finalText: '', tools: new Map(), lastUsed: null, lastSize: null, lastCost: null, denied: null }
     st.turn = turn
     st.session.push({ type: 'turn_started', turnId: turn.id })
     // ACP has no system prompt, so prepend instructions to the first message.
@@ -632,7 +634,8 @@ export class AcpProvider implements Provider {
     // Keep context limits on the last snapshot, and bill the prompt-wide totals once.
     const out = r.usage?.outputTokens
     if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
-      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 } })
+      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 },
+      contextSize: turn.lastSize, cost: turn.lastCost })
     else if (this.spec.promptUsageMeta) {
       // Grok reports prompt-wide usage totals in the prompt response _meta
       // (verified live on 1.0.67) instead of usage_update events. The top-level
@@ -698,8 +701,14 @@ export class AcpProvider implements Provider {
         return void st.session.push({ type: 'plan', entries: (u.entries ?? []).map((e: Json) => ({ content: String(e.content ?? ''), status: String(e.status ?? 'pending') })) })
       case 'usage_update':
         turn.lastUsed = Number(u.used) || 0
+        turn.lastSize = Number.isFinite(Number(u.size)) && Number(u.size) > 0 ? Number(u.size) : null
+        turn.lastCost = u.cost && Number.isFinite(Number(u.cost.amount)) && typeof u.cost.currency === 'string' && u.cost.currency
+          ? { amount: Number(u.cost.amount), currency: u.cost.currency }
+          : null
+        if (turn.lastUsed && turn.lastSize) st.session.usageGauge = { used: turn.lastUsed, size: turn.lastSize, cost: turn.lastCost }
         return void st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: 0, cachedInputTokens: 0,
-          billing: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, requests: 0 } })
+          billing: { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, requests: 0 },
+          contextSize: turn.lastSize, cost: turn.lastCost })
     }
   }
 

@@ -52,8 +52,10 @@ export type AgentEventBody =
   | { type: 'tool_started'; itemId: string; name: string; input: unknown }
   | { type: 'tool_completed'; itemId: string; name: string; input: unknown; ok: boolean; output: string; display?: unknown }
   // Context size stays separate from billing when an app supplies only prompt-wide totals.
+  // contextSize/cost carry the agent's own window and spend figures when it reports them.
   | { type: 'usage'; inputTokens: number; outputTokens: number; cachedInputTokens: number; requestId?: string;
-      billing?: { inputTokens: number; outputTokens: number; cachedInputTokens: number; requests: number } }
+      billing?: { inputTokens: number; outputTokens: number; cachedInputTokens: number; requests: number };
+      contextSize?: number | null; cost?: { amount: number; currency: string } | null }
   // Each plan replaces the previous plan in full.
   | { type: 'plan'; entries: { content: string; status: string }[] }
   | {

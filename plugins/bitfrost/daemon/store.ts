@@ -508,6 +508,7 @@ export class Store {
       return { session: { id, harness: i.harness, agent: i.agent, model: i.model, effort: i.effort ?? null, plan: i.plan ?? null, state: i.state, title: i.title ?? null,
         createdAt: i.createdAt, updatedAt: i.updatedAt, elapsedMs: Math.max(0, (i.closedAt ?? Date.now()) - i.createdAt!) },
         live: s.info.state === 'detached' ? null : s.live,
+        usageGauge: s.info.state === 'detached' ? null : s.usageGauge,
         activeTool: active ? { name: active.name, summary: toolSummary(active), startedAt: active.ts } : null,
         recentTools: tools.map((m) => ({ name: m.name, summary: toolSummary(m), status: m.status, ts: m.ts })),
         latestText: latest ? { text: latest.text.slice(0, 400), ts: latest.ts } : null, usage: { ...usage },

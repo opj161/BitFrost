@@ -1261,6 +1261,11 @@ function summaryText(a, s) {
   if (s.latestText?.text) lines.push(`Latest text: ${clip(s.latestText.text, 400)}`)
   const u = s.usage
   if (u) lines.push(`Usage: ${u.inputTokens ?? 0} input (${u.cachedTokens ?? 0} cached), ${u.outputTokens ?? 0} output, ${u.requests ?? 0} requests`)
+  const g = s.usageGauge
+  if (g && g.size > 0) {
+    const cost = g.cost ? ` · $${g.cost.amount}${g.cost.currency && g.cost.currency !== 'USD' ? ` ${g.cost.currency}` : ''} session` : ''
+    lines.push(`Context: ${g.used}/${g.size} (${Math.round((g.used / g.size) * 100)}%)${cost}`)
+  }
   if (s.inbox?.queued || s.inbox?.items?.length) {
     lines.push(`Inbox: ${s.inbox.queued ?? 0} queued`)
     for (const i of s.inbox.items ?? []) lines.push(`  [${i.state}${i.delivery ? `, ${i.delivery}` : ''}] ${clip(i.text, 200)}`)

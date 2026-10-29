@@ -58,6 +58,9 @@ test('push writes sessions, native refs, turns, events, messages and usage throu
     assert.deepEqual(restored.nativeRef, { threadId: 'native' })
     assert.equal(restored.events.length, s.events.length)
     assert.deepEqual(reader.summary(restored).usage, { inputTokens: 300, outputTokens: 50, cachedTokens: 130, requests: 2 })
+    s.usageGauge = { used: 67000, size: 200000, cost: { amount: 0.31, currency: 'USD' } }
+    assert.deepEqual(reader.summary(s).usageGauge, { used: 67000, size: 200000, cost: { amount: 0.31, currency: 'USD' } })
+    assert.strictEqual(reader.summary(restored).usageGauge, null)
     const rows = reader.db.prepare('SELECT * FROM messages WHERE session_id=?').all('s')
     assert.equal(rows.filter((m) => m.item_id === 'cmd' && m.kind === 'command').length, 1)
     assert.equal(reader.message('s', 'cmd')!.status, 'ok')

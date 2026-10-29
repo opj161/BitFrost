@@ -49,6 +49,9 @@ export class Session {
   activeTurnId: string | null = null
   nativeRef: any = null
   live: { activity: string | null; partialText: string | null; updatedAt: number } | null = null
+  // Last reported context window and spend; memory-only like live, so the
+  // status view can show a gauge without a schema change.
+  usageGauge: { used: number; size: number; cost: { amount: number; currency: string } | null } | null = null
   lastSeq = 0
   lastSeenAt = Date.now()
   private store?: Store

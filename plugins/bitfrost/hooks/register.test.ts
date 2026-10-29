@@ -1324,6 +1324,7 @@ test('the status, messages and send tools find an agent by id, session id or nam
     activeTool: { name: 'Bash', summary: 'npm test', startedAt: Date.now() - 5000 },
     recentTools: [{ name: 'Read', summary: 'src/parser.ts', status: 'completed', ts: 1 }],
     usage: { inputTokens: 1200, outputTokens: 300, cachedTokens: 800, requests: 4 },
+    usageGauge: { used: 67000, size: 200000, cost: { amount: 0.31, currency: 'USD' } },
     inbox: { queued: 1, items: [{ id: 'in-3', text: 'also docs', delivery: 'queued', state: 'queued', ts: 1 }] },
     turns: [],
     lastSeq: 1,
@@ -1348,6 +1349,7 @@ test('the status, messages and send tools find an agent by id, session id or nam
   const byId = (await call('status', { agent: a })).result
   expect(byId).toContain('Running: Bash npm test')
   expect(byId).toContain('Usage: 1200 input (800 cached), 300 output, 4 requests')
+  expect(byId).toContain('Context: 67000/200000 (34%) · $0.31 session')
   expect(byId).toContain('Inbox: 1 queued')
 
   w.sessions.get('fx-1')!.messages = {
