@@ -65,8 +65,10 @@ let lastSyncError = null // why the last model sync failed, for the status tool
 let claudeSession = null
 let renewal = null // the lease timer
 let setupRetry = null // the timer that tries to connect again after a failed start
-let live = false // between this session's start and its own end
-let ended = false // the session genuinely ended (session.end ran); a reload resets this, so recovery can heal a reloaded session
+// The session this module serves is over (session.end ran for good), so nothing should bring its models back.
+// A freshly loaded module starts false: a reload runs no session.start for an unchanged module, and the
+// engine drops a reloaded plugin's agent types, so the next turn has to be able to register them again.
+let ended = false
 const agents = new Map()
 // An agent by its name, or by one it had before names were shortened, so saved and resumed subagents still find it.
 const agentNamed = (name) => agents.get(name) ?? [...agents.values()].find((d) => d.legacy?.includes(name))
@@ -206,7 +208,6 @@ async function syncAgents($) {
   }
   const names = new Set(found.map((def) => def.name))
   for (const name of agents.keys()) if (!names.has(name)) agents.delete(name)
-  let registered = 0
   for (const def of found) {
     if (JSON.stringify(agents.get(def.name)) === JSON.stringify(def)) continue
     try {
@@ -228,19 +229,10 @@ async function syncAgents($) {
       continue
     }
     agents.set(def.name, def)
-    registered++
   }
   if (found.length && !agents.size) {
     lastSyncError = 'no models could be registered'
     throw new Error('no models could be registered')
-  }
-  // Late registrations dispatch from the next turn on; ask the engine to
-  // re-evaluate offered types now so a healed session need not restart.
-  // Engines without refreshAgents throw here; the types still arrive next turn.
-  if (registered) {
-    try {
-      await $.session.refreshAgents()
-    } catch {}
   }
   lastSyncError = null
   agentsAt = at
@@ -256,6 +248,7 @@ async function connect($, profile) {
   await ensureDaemon($)
   leaseArgs = { host: 'claude-code', profile, hostSessionId: claudeSession }
   await acquireLease($)
+  if (!leaseId) return // the session ended while this waited, and its lease was given back
   keepLease($)
   const { found, hint } = await syncAgents($)
   if (!found.length && hint) {
@@ -299,6 +292,7 @@ async function recoverModels($) {
   if (!leaseId) {
     leaseArgs = { host: 'claude-code', profile: savedProfile, hostSessionId: claudeSession }
     await acquireLease($)
+    if (!leaseId) return // the session ended while this waited, and its lease was given back
     keepLease($)
   }
   const { found, hint } = await syncAgents($)
@@ -316,11 +310,16 @@ async function recoverModels($) {
   }
 }
 
+// A Claude Code that BitFrost itself started for another app: it gets no models, tools or lease from us.
+// Read each time, not remembered, because this module's state outlives a session.
+const isInside = async ($) => !!(await $.env.get('BITFROST_INSIDE'))
+
 // Heals a session whose start never registered the models, on any turn that
 // begins without them. Ended sessions stay quiet: their agents were dropped
-// on purpose. A reload resets ended, so a reloaded session heals too.
+// on purpose. So do sessions BitFrost itself started (see isInside).
 async function maybeRecover($) {
   if (ended || agents.size || syncing || setupRetry || recovering) return
+  if (await isInside($)) return
   recovering = true
   $.clock.after(SETUP_RETRY_MS, () => {
     recovering = false
@@ -1512,7 +1511,7 @@ async function recipientOf($, to) {
 export const register = (on) => {
   on('session.start', async ($, e, next) => {
     // Stay out of Claude Code sessions that BitFrost itself started.
-    if (await $.env.get('BITFROST_INSIDE')) return next(e)
+    if (await isInside($)) return next(e)
     sessionCwd = e.cwd ?? sessionCwd
     const home = (await $.env.get('HOME')) ?? ''
     const profile = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${home}/.claude`
@@ -1528,7 +1527,6 @@ export const register = (on) => {
     notOurs.clear()
     // Known before anything slow, so the end of the session this one replaced can tell it is not ours.
     claudeSession = await $.session.id()
-    live = true
     ended = false // a new session heals like a fresh load, even after an end arrived late
     setupRetry?.cancel()
     setupRetry = null
@@ -1567,8 +1565,11 @@ export const register = (on) => {
     // The end of a session that a resume or /clear replaced can arrive after the new one has started.
     // It must not take down the new session's lease, models and tools.
     if (e.sessionId && claudeSession && e.sessionId !== claudeSession) return next(e)
-    live = false
-    ended = true
+    // A /clear or a resume ends this session id but the process goes on under another, and session.start
+    // does not fire again for it. Let the next turn register the models for that one.
+    const goesOn = e.reason === 'clear' || e.reason === 'resume'
+    ended = !goesOn
+    if (goesOn) claudeSession = null
     setupRetry?.cancel()
     setupRetry = null
     for (const [agentId, st] of foreign) await saveRecord($, agentId, st, true)

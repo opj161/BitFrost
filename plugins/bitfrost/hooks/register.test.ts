@@ -28,7 +28,7 @@ const MAIN_ROWS = [{ role: 'user', text: 'please fix the failing test', toolUses
 type Scripted = { events: any[]; items: Record<string, any>; approvals: any[]; state?: string; lastSeq?: number; summary?: any; messages?: any; item?: any }
 
 // A fake bitfrostd: each POST /sessions takes the next scripted session the test queued.
-const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
+const world = (on: any, opts: { store?: Record<string, unknown>; inside?: boolean } = {}) => {
   const fake = {
     health: {
       version: '0.7.1', busy: false, configError: null as string | null,
@@ -90,7 +90,7 @@ const world = (on: any, opts: { store?: Record<string, unknown> } = {}) => {
   let inputN = 0
   const nextAgentId = () => `agent-${++agentN}`
 
-  mock.env(on, { HOME: '/home/user' }) // no XDG_RUNTIME_DIR: finding the daemon must not need it
+  mock.env(on, { HOME: '/home/user', ...(opts.inside ? { BITFROST_INSIDE: '1' } : {}) }) // no XDG_RUNTIME_DIR: finding the daemon must not need it
   w.clock = mock.clock(on)
   // The plugin's store, in memory and readable by the test, as JSON keeps it.
   Object.assign(w.stored, structuredClone(opts.store ?? {}))
@@ -2041,6 +2041,45 @@ test('a session.end for a session that was replaced leaves the new one connected
   // Its own end still lets go.
   await $.session.end({ reason: 'other', sessionId: 'main-1' } as any)
   expect(w.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([`/leases/${w.leaseId}`])
+})
+
+test('a /clear ends the session id but the next turn registers the models for the new one', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  const leases = () => (w.posts['/leases'] ?? []).length
+  const before = leases()
+  // The engine does not fire session.start for the session a /clear starts.
+  await $.session.end({ reason: 'clear', sessionId: 'main-1' } as any)
+  expect(w.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([`/leases/${w.leaseId}`])
+  w.registered.length = 0
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  expect(leases()).toBe(before + 1)
+  expect(w.registered.map((r: any) => r.name)).toContain('gpt-6-sol')
+  await w.clock.advance(15_000)
+  await w.clock.settle()
+})
+
+test('a session that ended for good is not healed by a later turn', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  await $.session.end({ reason: 'other', sessionId: 'main-1' } as any)
+  const leases = () => (w.posts['/leases'] ?? []).length
+  const before = leases()
+  w.registered.length = 0
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await w.clock.advance(15_000)
+  expect(leases()).toBe(before)
+  expect(w.registered).toEqual([])
+})
+
+test('a session BitFrost started itself is not given models by recovery', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on, { inside: true })
+  await start($) // session.start leaves it alone and registers nothing
+  const before = (w.posts['/leases'] ?? []).length
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await w.clock.advance(15_000)
+  expect((w.posts['/leases'] ?? []).length).toBe(before)
+  expect(w.registered).toEqual([])
 })
 
 test('a connect that fails at session start is tried again', { timeoutMs: 20000 }, async ($, on) => {
