@@ -15,7 +15,7 @@ import { FEATURES, EFFORTS, claudeModelId, pendingFeatures } from './features.ts
 export { VERSION } from './version.ts'
 
 const HOME = os.homedir()
-export const RUN_DIR = process.env.BITFROST_RUNTIME_DIR || path.join(process.env.XDG_RUNTIME_DIR ?? `/tmp/bitfrost-${process.getuid!()}`, 'bitfrost')
+export const RUN_DIR = process.env.BITFROST_RUNTIME_DIR || path.join(process.env.XDG_RUNTIME_DIR || `/tmp/bitfrost-${process.getuid!()}`, 'bitfrost')
 export const DATA_DIR = process.env.BITFROST_DATA_DIR || (process.platform === 'darwin'
   ? path.join(HOME, 'Library', 'Application Support', 'BitFrost')
   : path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'bitfrost'))
@@ -23,8 +23,25 @@ export const SOCKET = path.join(RUN_DIR, 'bitfrostd.sock')
 export const LOG = path.join(RUN_DIR, 'bitfrostd.log')
 export const LOCK = path.join(RUN_DIR, 'bitfrostd.lock')
 export const DATA_LOCK = path.join(DATA_DIR, 'daemon.lock')
-export const CACHE = path.join(process.env.XDG_CACHE_HOME ?? path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
-export const CONFIG = path.join(process.env.XDG_CONFIG_HOME ?? path.join(HOME, '.config'), 'bitfrost', 'config.json')
+export const CACHE = path.join(process.env.XDG_CACHE_HOME || path.join(HOME, '.cache'), 'bitfrost', 'agents.json')
+export const CONFIG = path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'bitfrost', 'config.json')
+
+// Every client trusts whatever answers on the socket in this directory, so it must be ours alone. Under /tmp
+// (the fallback, and the only choice on macOS) another user could have made it first, or swapped in a link.
+export function runDirTrusted(dir = RUN_DIR): boolean {
+  try {
+    const st = fs.lstatSync(dir)
+    return st.isDirectory() && st.uid === process.getuid!() && (st.mode & 0o022) === 0
+  } catch {
+    return false
+  }
+}
+
+export function ensureRunDir(dir = RUN_DIR) {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (!runDirTrusted(dir)) throw new Error(`${dir} is not a real directory of yours that only you can write; not using it`)
+  fs.chmodSync(dir, 0o700)
+}
 
 export function log(msg: string) {
   const line = `${new Date().toISOString()} ${msg}\n`
@@ -184,28 +201,57 @@ export function loginShellLookup(name: string): Promise<string | null> {
 }
 
 // Link a file containing the PID into place so concurrent starts cannot see an empty lock.
-export function takeLock(lock = LOCK): boolean {
-  const mine = `${lock}.${process.pid}`
+function linkPid(file: string): boolean {
+  const mine = `${file}.${process.pid}`
   fs.writeFileSync(mine, String(process.pid))
   try {
-    fs.linkSync(mine, lock)
+    fs.linkSync(mine, file)
     return true
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+    return false
   } finally {
     fs.rmSync(mine, { force: true })
   }
-  let holder = NaN
-  try {
-    holder = Number.parseInt(fs.readFileSync(lock, 'utf8'), 10)
-  } catch {}
-  if (holder === process.pid) return true
-  if (holder > 0 && alive(holder)) return false
-  fs.rmSync(lock, { force: true })
-  return takeLock(lock)
 }
 
+const holderOf = (file: string): number => {
+  try {
+    return Number.parseInt(fs.readFileSync(file, 'utf8'), 10)
+  } catch {
+    return NaN
+  }
+}
+
+export function takeLock(lock = LOCK): boolean {
+  if (linkPid(lock)) return true
+  if (holderOf(lock) === process.pid) return true
+  if (alive(holderOf(lock))) return false
+  // The holder is gone. Removing its lock and linking ours is not atomic, so two starters that both saw the
+  // dead holder could each remove the other's fresh lock and both win. Only one starter at a time takes over,
+  // and it looks at the lock again once it has the turn.
+  const turn = `${lock}.takeover`
+  if (!linkPid(turn)) {
+    const other = holderOf(turn)
+    if (other > 0 && other !== process.pid && alive(other)) return false
+    // A starter that died mid-takeover left its turn behind.
+    fs.rmSync(turn, { force: true })
+    return takeLock(lock)
+  }
+  try {
+    const holder = holderOf(lock)
+    if (holder === process.pid) return true
+    if (alive(holder)) return false
+    fs.rmSync(lock, { force: true })
+    return linkPid(lock)
+  } finally {
+    if (holderOf(turn) === process.pid) fs.rmSync(turn, { force: true })
+  }
+}
+
+// kill(0, 0) and kill(-1, 0) would signal our own group, so only a real pid counts.
 function alive(pid: number): boolean {
+  if (!(pid > 0)) return false
   try {
     process.kill(pid, 0)
     return true

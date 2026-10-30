@@ -48,8 +48,8 @@ import { Store } from './store.ts'
 import { killOwnedGroups, ownProcesses } from './process.ts'
 import { Session } from './session.ts'
 import { buildAgents, describe, nameTable, selectModels, whyNot, type AgentDef, type HarnessModel } from './registry.ts'
-import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, loadConfig, log, loginShellLookup, pathLookup, providerEnv, takeLock, type Config } from './config.ts'
-import { LEASE_TTL_MS, SessionTable } from './leases.ts'
+import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, ensureRunDir, loadConfig, log, loginShellLookup, pathLookup, providerEnv, takeLock, type Config } from './config.ts'
+import { LEASE_TTL_MS, SessionTable, monotonic } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
 import { selftest, selftestAll } from './selftest.ts'
@@ -112,7 +112,12 @@ async function ensure() {
 function serve() {
   // Child apps inherit this flag to prevent nested bitfrost agents.
   process.env.BITFROST_INSIDE = '1'
-  fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 })
+  try {
+    ensureRunDir()
+  } catch (e) {
+    console.error((e as Error).message)
+    process.exit(1)
+  }
   if (!takeLock()) {
     log(`another bitfrostd is running; pid ${process.pid} exits`)
     process.exit(0)
@@ -444,7 +449,7 @@ function serve() {
       configError: config.error,
       providers: [...providers.values()].map((p) => ({ id: p.id, location: p.location, models: registry?.agents.filter((a) => a.harness === p.id).length ?? 0 })),
       registryAt: registry?.at ?? null,
-      leases: [...table.leases].map(([id, l]) => ({ id, host: l.host, profile: l.profile, expiresInMs: Math.max(0, l.expires - now) })),
+      leases: [...table.leases].map(([id, l]) => ({ id, host: l.host, profile: l.profile, expiresInMs: Math.max(0, l.expires - monotonic()) })),
       sessions: table.summaries(),
     }
   }
@@ -632,7 +637,7 @@ function serve() {
 
       const session = parts[0] === 'sessions' && parts[1] ? table.load(parts[1], store) : undefined
       if (!session) return json(res, 404, { error: 'no such session' })
-      session.lastSeenAt = Date.now()
+      session.lastSeenAt = monotonic()
       store.ensure(session)
       const [, , action, itemId] = parts
       if (req.method === 'DELETE' && !action) {
@@ -748,11 +753,12 @@ function serve() {
 
   setInterval(() => {
     const now = Date.now()
+    const seen = monotonic()
     table.tick()
     leasesChanged()
-    for (const { session: s, hostGone } of table.unattended(now, ABANDONED_MS)) {
+    for (const { session: s, hostGone } of table.unattended(seen, ABANDONED_MS)) {
       log(`session ${s.info.id}: ${hostGone ? 'its subagent stopped asking about it' : 'unattended for an hour'}; stopping it`)
-      s.lastSeenAt = now // Limit interrupts to one window each.
+      s.lastSeenAt = seen // Limit interrupts to one window each.
       void s.stop(providerFor(s), 'abandoned')
     }
     if (!discovering && [...providers.values()].some((p) => !busy(p.id) && updated(p))) void discover()

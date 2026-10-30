@@ -557,7 +557,7 @@ const inside = (file: string, dir: string) => file === dir || file.startsWith(di
 const HOME = os.homedir()
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 // Copy the bridge to a fixed path so ZCode's config survives plugin updates.
-const BRIDGE_DIR = path.join(process.env.XDG_DATA_HOME ?? path.join(HOME, '.local', 'share'), 'bitfrost', 'zcode-plugin')
+const BRIDGE_DIR = path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'bitfrost', 'zcode-plugin')
 const ZCODE_CONFIG = path.join(HOME, '.zcode', 'cli', 'config.json')
 
 function installBridgeCopy() {

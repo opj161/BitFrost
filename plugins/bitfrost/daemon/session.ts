@@ -53,7 +53,7 @@ export class Session {
   // status view can show a gauge without a schema change.
   usageGauge: { used: number; size: number; cost: { amount: number; currency: string } | null } | null = null
   lastSeq = 0
-  lastSeenAt = Date.now()
+  lastSeenAt = performance.now() // monotonic, like the lease clock it is compared with
   private store?: Store
   private waiters = new Set<() => void>()
   private turnListeners = new Set<(event: AgentEvent) => void>()

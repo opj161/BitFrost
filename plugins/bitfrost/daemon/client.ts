@@ -10,12 +10,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { LOG, RUN_DIR, SOCKET } from './config.ts'
+import { LOG, SOCKET, ensureRunDir, runDirTrusted } from './config.ts'
 
 const ENTRY = path.join(path.dirname(fileURLToPath(import.meta.url)), 'bitfrostd.ts')
 
 export function call(method: string, urlPath: string, timeout = 1000, body?: unknown): Promise<{ status: number; body: any } | null> {
   return new Promise((resolve) => {
+    if (!runDirTrusted()) return resolve(null) // not ours, so whatever answers there is not our helper
     // Avoid pooled connections to a helper that may have exited.
     const req = http.request({ socketPath: SOCKET, path: urlPath, method, timeout, agent: false }, (res) => {
       let data = ''
@@ -45,7 +46,12 @@ export const health = () => get('/health')
 // Returns false when the helper did not come up.
 export async function start(): Promise<boolean> {
   if (await health()) return true
-  fs.mkdirSync(RUN_DIR, { recursive: true, mode: 0o700 })
+  try {
+    ensureRunDir()
+  } catch (e) {
+    console.error((e as Error).message)
+    return false
+  }
   const out = fs.openSync(LOG, 'a')
   const child = spawn(process.execPath, [...process.execArgv, ENTRY, 'serve'], { detached: true, stdio: ['ignore', out, out] })
   child.unref()

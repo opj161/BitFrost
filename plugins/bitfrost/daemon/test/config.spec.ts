@@ -11,8 +11,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
-import { configKey, loadConfig, takeLock, validateConfig } from '../config.ts'
+import { spawn, spawnSync } from 'node:child_process'
+import { configKey, ensureRunDir, loadConfig, runDirTrusted, takeLock, validateConfig } from '../config.ts'
 import { buildAgents, describe } from '../registry.ts'
 import { pendingFeatures } from '../features.ts'
 const demos = pendingFeatures({ handback: {} }).map((f) => f.id)
@@ -245,4 +245,51 @@ test('agent names are short: the newest of a family takes the bare name, older a
   // The names these agents had before still find them, for saved and resumed subagents.
   assert.deepStrictEqual(agents.map((a) => a.legacy![0]).slice(0, 2), ['gpt-6-1-sol', 'gpt-6-sol'])
   assert.ok(agents.every((a) => /^[a-z0-9][a-z0-9_-]*$/.test(a.name) && a.name.length <= 64))
+})
+
+test('takeLock: starters that all find the same dead holder produce exactly one winner', async (t) => {
+  const dir = tempDir(t)
+  const lock = path.join(dir, 'bitfrostd.lock')
+  const configUrl = new URL('../config.ts', import.meta.url).href
+  // Each starter loads, says ready, and takes the lock on "go", so they race as closely as processes can.
+  // It then stays alive, so a winner is a live holder for the others.
+  const starter = `import(${JSON.stringify(configUrl)}).then(({ takeLock }) => {
+    process.stdout.write('ready\\n')
+    process.stdin.once('data', () => { process.stdout.write(String(takeLock(${JSON.stringify(lock)})) + '\\n') })
+  })`
+  const next = (c: ReturnType<typeof spawn>) => new Promise<string>((resolve) => c.stdout!.once('data', (d) => resolve(String(d).trim())))
+  for (let round = 0; round < 25; round++) {
+    fs.writeFileSync(lock, String(spawnSync(process.execPath, ['-e', '']).pid!))
+    const children = Array.from({ length: 6 }, () => spawn(process.execPath, ['--disable-warning=ExperimentalWarning', '-e', starter], { stdio: ['pipe', 'pipe', 'inherit'] }))
+    await Promise.all(children.map(next))
+    const answers = Promise.all(children.map(next))
+    for (const c of children) c.stdin!.write('go\n')
+    const got = await answers
+    for (const c of children) c.kill()
+    await Promise.all(children.map((c) => new Promise((resolve) => c.once('close', resolve))))
+    assert.strictEqual(got.filter((a) => a === 'true').length, 1, `round ${round}: ${got}`)
+    assert.deepStrictEqual(fs.readdirSync(dir).filter((f) => f !== 'bitfrostd.lock'), [], `round ${round} left files behind`)
+    fs.rmSync(lock, { force: true })
+  }
+})
+
+test('the runtime directory is used only when it is a real directory that nobody else can write', (t) => {
+  const base = tempDir(t)
+  const mine = path.join(base, 'mine')
+  ensureRunDir(mine)
+  assert.strictEqual(fs.statSync(mine).mode & 0o777, 0o700)
+  assert.strictEqual(runDirTrusted(mine), true)
+  ensureRunDir(mine) // again is fine
+
+  const open = path.join(base, 'open')
+  fs.mkdirSync(open, { mode: 0o777 })
+  fs.chmodSync(open, 0o777)
+  assert.strictEqual(runDirTrusted(open), false)
+  assert.throws(() => ensureRunDir(open), /not using it/)
+
+  const link = path.join(base, 'link')
+  fs.symlinkSync(mine, link)
+  assert.strictEqual(runDirTrusted(link), false)
+  assert.throws(() => ensureRunDir(link), /not using it/)
+  assert.strictEqual(runDirTrusted(path.join(base, 'missing')), false)
 })

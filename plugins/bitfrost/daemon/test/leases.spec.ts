@@ -8,7 +8,7 @@
 // provider records what it is asked; the clock moves by hand.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { HOLD_MS, LEASE_TTL_MS, SessionTable } from '../leases.ts'
+import { HOLD_MS, LEASE_TTL_MS, SessionTable, monotonic } from '../leases.ts'
 import type { Provider } from '../provider.ts'
 import { Session } from '../session.ts'
 
@@ -242,4 +242,23 @@ test('detached loads are cached across requests and expire only when unowned and
   table.renew('lease')
   table.tick()
   assert.equal(table.load('saved', store), attached)
+})
+
+test('a stepped wall clock or a suspend does not expire leases: liveness runs on a monotonic clock', (t) => {
+  // The wall clock is faked before the table exists, so a table that read it would see the step.
+  let step = 0
+  const real = Date.now()
+  t.mock.method(Date, 'now', () => real + step)
+  const interrupted: string[] = []
+  const provider = { interrupt: async (s: Session) => void interrupted.push(s.info.id) } as unknown as Provider
+  const table = new SessionTable(() => provider, () => {})
+  table.addLease('L1', { host: 'claude-code', profile: '/p', hostSessionId: 'H1' })
+  const s = new Session({ id: 'a', harness: 'fake', agent: 'test', model: 'm', cwd: '/tmp', state: 'idle' })
+  s.push({ type: 'turn_started', turnId: 'a-t' })
+  table.add(s, 'L1')
+  step = 10 * 60_000 // as when WSL or a laptop wakes; no time passed for the host
+  table.tick()
+  assert.ok(table.leases.has('L1'))
+  assert.deepStrictEqual(interrupted, [])
+  assert.strictEqual(table.unattended(monotonic(), 90_000).length, 0)
 })

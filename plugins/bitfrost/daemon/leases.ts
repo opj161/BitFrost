@@ -19,6 +19,10 @@ export const HOLD_MS = 5 * 60_000
 // are only a backstop against wedged providers away from being stopped.
 export const UNATTENDED_MS = 60 * 60_000
 
+// Lease expiry, holds and silence are measured on a monotonic clock: a suspended machine or a stepped wall clock
+// must not expire every lease before any host has had a chance to renew it.
+export const monotonic = () => performance.now()
+
 export type Lease = { host: string; profile: string; hostSessionId: string; expires: number }
 
 export type SessionSummary = { id: string; agent: string; harness: string; model: string; state: string; leaseId: string | null }
@@ -34,7 +38,7 @@ export class SessionTable {
   private log: (msg: string) => void
   private now: () => number
 
-  constructor(providerFor: (s: Session) => Provider | undefined, log: (msg: string) => void, now: () => number = Date.now) {
+  constructor(providerFor: (s: Session) => Provider | undefined, log: (msg: string) => void, now: () => number = monotonic) {
     this.providerFor = providerFor
     this.log = log
     this.now = now
@@ -119,7 +123,7 @@ export class SessionTable {
     this.held.delete(sessionId)
     this.log(`session ${sessionId}: let go (${why})`)
     this.closing.add(s)
-    s.info.closedAt = this.now()
+    s.info.closedAt = Date.now() // persisted, so wall time
     s.info.closeReason = why
     s.info.leaseId = null
     s.save()
