@@ -323,3 +323,16 @@ export function classifyTurnEnd(i: { stop: string; meta?: Json; cancelled: boole
     : (denied?.reason ?? error ?? (status === 'failed' ? (STOP_WORDS[stop] ?? `it stopped (${stop})`) : null))
   return { status, reason, why }
 }
+
+// What a prompt cost, as BitFrost counts it: input includes the cached part (as Codex and Grok report it), and
+// output includes reasoning. ACP's Usage keeps the parts apart (opencode's inputTokens leaves the cache out and
+// its total adds every part), so put them together. Reasoning is added only where the app's own total shows it
+// is not already inside outputTokens; without a total it is left out, as it always was.
+export function billedUsage(u: Json): { input: number; output: number; cached: number } {
+  const n = (v: Json) => (Number(v) > 0 ? Number(v) : 0)
+  const { input, output, thought } = { input: n(u?.inputTokens), output: n(u?.outputTokens), thought: n(u?.thoughtTokens) }
+  const read = n(u?.cachedReadTokens ?? u?.cachedInputTokens)
+  const write = n(u?.cachedWriteTokens)
+  const apart = thought > 0 && u?.totalTokens != null && n(u.totalTokens) >= input + output + thought + read + write
+  return { input: input + read + write, output: output + (apart ? thought : 0), cached: read }
+}

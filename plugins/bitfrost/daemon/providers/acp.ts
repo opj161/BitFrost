@@ -14,7 +14,7 @@ import { createInterface } from 'node:readline'
 import type { Decision, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderCapabilities, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
-import { asClaudeTool, blankTool, choicesOf, classifyTurnEnd, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange, isShellTool } from './acp-shapes.ts'
+import { asClaudeTool, blankTool, billedUsage, choicesOf, classifyTurnEnd, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange, isShellTool } from './acp-shapes.ts'
 import { formContent, globMatch, grantKeyOf, hasInput, isSelect, objectOf, outputOf, permissionOutcome, summaryOf, toQuestion, vendorOf, type ToolCall } from './acp-shapes.ts'
 
 type Json = any
@@ -628,9 +628,9 @@ export class AcpProvider implements Provider {
     if (st.turn !== turn) return
     this.flush(st, turn)
     // Keep context limits on the last snapshot, and bill the prompt-wide totals once.
-    const out = r.usage?.outputTokens
-    if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: 0,
-      billing: { inputTokens: r.usage?.inputTokens ?? turn.lastUsed, outputTokens: Number(out) || 0, cachedInputTokens: Number(r.usage?.cachedInputTokens) || 0, requests: Number(r.usage?.modelRequestCount) || 1 },
+    const billed = billedUsage(r.usage)
+    if (turn.lastUsed !== null) st.session.push({ type: 'usage', requestId: turn.id, inputTokens: turn.lastUsed, outputTokens: billed.output, cachedInputTokens: 0,
+      billing: { inputTokens: r.usage?.inputTokens != null ? billed.input : turn.lastUsed, outputTokens: billed.output, cachedInputTokens: billed.cached, requests: Number(r.usage?.modelRequestCount) || 1 },
       contextSize: turn.lastSize, cost: turn.lastCost })
     else if (this.spec.promptUsageMeta) {
       // Grok reports prompt-wide usage totals in the prompt response _meta

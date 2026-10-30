@@ -1045,3 +1045,14 @@ test('a turn Grok ends itself with stopReason cancelled is a limit, not a user i
   assert.equal(classifyTurnEnd({ ...base, stop: 'end_turn', wrongModel: 'x' }).reason, 'wrong_model')
   assert.equal(classifyTurnEnd({ ...base, stop: 'cancelled', denied: { reason: 'no' } }).reason, 'permission_denied')
 })
+
+test('ACP usage is billed with cache reads inside input and separate reasoning inside output', async () => {
+  const { billedUsage } = await import('../providers/acp-shapes.ts')
+  // opencode: input leaves the cache out, and its total counts every part.
+  assert.deepEqual(billedUsage({ inputTokens: 100, outputTokens: 40, totalTokens: 100 + 40 + 10 + 300 + 20, thoughtTokens: 10, cachedReadTokens: 300, cachedWriteTokens: 20 }), { input: 420, output: 50, cached: 300 })
+  // An app whose output already holds its reasoning (total smaller than the parts summed) is not counted twice.
+  assert.deepEqual(billedUsage({ inputTokens: 100, outputTokens: 50, totalTokens: 150, thoughtTokens: 10 }), { input: 100, output: 50, cached: 0 })
+  // Without a total the reasoning stays out, as before; the older field name for cache reads still counts.
+  assert.deepEqual(billedUsage({ inputTokens: 100, outputTokens: 50, thoughtTokens: 10, cachedInputTokens: 30 }), { input: 130, output: 50, cached: 30 })
+  assert.deepEqual(billedUsage(undefined), { input: 0, output: 0, cached: 0 })
+})
