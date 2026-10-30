@@ -5,7 +5,30 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 import fs from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, type ChildProcess } from 'node:child_process'
+
+// The environment another company's app gets from the helper. The helper is often started by a Claude Code
+// session, whose own session token, socket and settings sit in its environment; they are Claude Code's, not for
+// an app that is not it or for the shell commands that app runs. Anything the user set for the app itself
+// (CLAUDE_CONFIG_DIR, an API key under another name) and anything in `extra` still goes through.
+const CLAUDE_CODE_OWN = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDE_PLUGIN_)|^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT)$/
+export function appEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(process.env)) if (!CLAUDE_CODE_OWN.test(name)) env[name] = value
+  return { ...env, ...extra }
+}
+
+// Signals the whole group of a process started with `detached: true`, so what it started goes with it. A process
+// that is not a group leader is signalled alone. With `onlyLive` an app that has already exited is left alone
+// (its pid may be someone else's by now); without it, a group is still signalled after its leader exited,
+// to reach what the leader left running. Returns whether anything was signalled.
+export function killGroup(proc: ChildProcess, signal: NodeJS.Signals, onlyLive = false): boolean {
+  if (!proc.pid || (onlyLive && (proc.exitCode !== null || proc.signalCode !== null))) return false
+  try { process.kill(-proc.pid, signal); return true } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return proc.kill(signal)
+    return onlyLive ? proc.kill(signal) : false
+  }
+}
 
 // owner is the helper that started the group: its store, and its own pid and start time.
 type Owner = { store: string; pid: number; startTime: string | null }

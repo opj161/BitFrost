@@ -5,6 +5,7 @@
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { appEnv, killGroup } from '../process.ts'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -164,7 +165,7 @@ export class AcpProvider implements Provider {
 
   private start(): Promise<void> {
     if (this.ready) return this.ready
-    const proc = spawn(this.launch.bin, this.launch.args, { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...this.launch.env } })
+    const proc = spawn(this.launch.bin, this.launch.args, { stdio: ['pipe', 'pipe', 'pipe'], env: appEnv(this.launch.env), detached: true }) // its own group, so stopping it takes what it started along
     this.proc = proc
     proc.on('error', (e) => this.onExit(proc, `could not start (${e.message})`))
     proc.on('exit', (code, signal) => this.onExit(proc, `exited (code ${code}, signal ${signal})`))
@@ -185,13 +186,13 @@ export class AcpProvider implements Provider {
     const hung = setTimeout(() => {
       if (this.proc !== proc) return
       this.log(`${this.id}: no handshake within ${this.initMs / 1000} s; restarting it`)
-      proc.kill()
+      killGroup(proc, 'SIGTERM', true)
     }, this.initMs)
     hung.unref()
     this.ready.then(() => clearTimeout(hung), () => clearTimeout(hung))
     this.ready.catch((e) => {
       this.log(`${this.id}: handshake failed: ${e.message}`)
-      if (this.proc === proc) proc.kill()
+      if (this.proc === proc) killGroup(proc, 'SIGTERM', true)
     })
     return this.ready
   }
@@ -537,7 +538,7 @@ export class AcpProvider implements Provider {
   // The app server is shared, so only force it down when no other session has a turn running.
   kill(session: Session) {
     const busy = [...this.states.entries()].some(([id, st]) => id !== session.info.id && st.turn)
-    return !busy && ![...this.opening].some((s) => s !== session) && !this.discovering ? this.proc?.kill('SIGKILL') ?? false : false
+    return !busy && ![...this.opening].some((s) => s !== session) && !this.discovering ? (this.proc ? killGroup(this.proc, 'SIGKILL', true) : false) : false
   }
 
   isBusy(session: Session) { return this.opening.has(session) || !!this.stateOf(session)?.turn }
@@ -555,7 +556,7 @@ export class AcpProvider implements Provider {
     for (const { timer } of this.parked.values()) clearTimeout(timer)
     this.parked.clear()
     for (const st of this.states.values()) st.session.dropInputs()
-    this.proc?.kill()
+    if (this.proc) killGroup(this.proc, 'SIGTERM', true)
   }
 
   disposeSession(session: Session) {

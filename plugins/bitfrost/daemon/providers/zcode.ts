@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import type { AgentEventBody, Decision, EndReason, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderEnv, ProviderFactory, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
-import { processIdentity, killOwnedGroup, killOwnedGroups, type ProcessIdentity } from '../process.ts'
+import { appEnv, killGroup, processIdentity, killOwnedGroup, killOwnedGroups, type ProcessIdentity } from '../process.ts'
 
 const CODING_PLAN = 'account:zai-individual-coding-plan'
 
@@ -309,7 +309,7 @@ export class ZCodeAdapter implements Provider {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
-        ...process.env,
+        ...appEnv(),
         ELECTRON_RUN_AS_NODE: '1',
         ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: this.config.builtinProviderConfig,
         ZCODE_PERSONAL_PROVIDER_CONFIG_FILE: st.choiceFile,
@@ -510,14 +510,6 @@ function splitBuiltInTools(text: string): BuiltInPart[] | null {
   const after = text.slice(offset).trim()
   if (after) parts.push({ kind: 'text', text: after })
   return parts
-}
-
-function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
-  if (!proc.pid) return false
-  try { process.kill(-proc.pid, signal); return true } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return proc.kill(signal)
-    return false
-  }
 }
 
 export function classifyZCodeError(code: string | undefined): EndReason {

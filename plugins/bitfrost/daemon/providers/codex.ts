@@ -6,6 +6,7 @@
 
 // Run Codex app-server over standard input and output, and translate its events.
 import { spawn, type ChildProcess } from 'node:child_process'
+import { appEnv, killGroup } from '../process.ts'
 import fs from 'node:fs'
 import os from 'node:os'
 import path, { dirname } from 'node:path'
@@ -120,8 +121,9 @@ export class CodexAdapter implements Provider {
     if (this.ready) return this.ready
     this.ready = (async () => {
       // Put the launcher's own Node first on PATH.
-      const env = { ...process.env, PATH: `${dirname(this.bin)}:${process.env.PATH ?? ''}` }
-      const proc = spawn(this.bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], env })
+      const env = { ...appEnv(), PATH: `${dirname(this.bin)}:${process.env.PATH ?? ''}` }
+      // Its own group, so stopping it takes what it started along.
+      const proc = spawn(this.bin, ['app-server'], { stdio: ['pipe', 'pipe', 'pipe'], env, detached: true })
       this.proc = proc
       proc.stderr!.on('data', (d) => this.log(`codex stderr: ${String(d).trimEnd()}`))
       // Catch writes to an exited app-server so they cannot crash the helper.
@@ -176,7 +178,7 @@ export class CodexAdapter implements Provider {
       } catch (error) {
         // A handshake that failed or never answered must not be remembered, or every later start waits on it.
         if (this.proc === proc) { this.proc = null; this.ready = null }
-        proc.kill()
+        killGroup(proc, 'SIGTERM', true)
         throw error
       }
     })()
@@ -371,7 +373,7 @@ export class CodexAdapter implements Provider {
 
   dispose() {
     for (const session of this.sessions.values()) session.dropInputs()
-    this.proc?.kill()
+    if (this.proc) killGroup(this.proc, 'SIGTERM', true)
   }
 
   disposeSession(session: Session) {

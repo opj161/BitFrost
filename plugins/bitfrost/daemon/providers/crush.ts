@@ -8,6 +8,7 @@
 // because Crush keeps the chosen model per workspace and shares a workspace
 // between everyone working in the same folder.
 import { spawn, type ChildProcess } from 'node:child_process'
+import { appEnv, killGroup } from '../process.ts'
 import { randomBytes, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import http from 'node:http'
@@ -150,12 +151,6 @@ function request(sock: string, method: string, url: string, body?: Json, timeout
   })
 }
 
-function killGroup(proc: ChildProcess, signal: NodeJS.Signals) {
-  if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) return false
-  try { process.kill(-proc.pid, signal) } catch { try { proc.kill(signal) } catch { return false } }
-  return true
-}
-
 // Allow only commands that cannot change anything; Crush runs some others unasked.
 const READ_ONLY = new Set(['pwd', 'ls', 'date', 'cal', 'df', 'du', 'free', 'groups', 'id', 'uname', 'uptime', 'whatis', 'whereis', 'which', 'whoami', 'type', 'echo'])
 const GIT_READ_ONLY = new Set(['status', 'diff', 'log', 'show', 'blame', 'ls-files', 'rev-parse', 'describe', 'shortlog'])
@@ -290,8 +285,7 @@ export class CrushProvider implements Provider {
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
-        ...process.env,
-        ...this.launch.env,
+        ...appEnv(this.launch.env),
         BITFROST_SOCKET: this.socket,
         BITFROST_CRUSH_TOKEN: token,
         CRUSH_CACHE_DIR: path.join(dataDir, 'cache'),
@@ -377,7 +371,7 @@ export class CrushProvider implements Provider {
     b.gone = why
     this.backends.delete(b)
     b.stream?.destroy()
-    killGroup(b.proc, 'SIGKILL')
+    killGroup(b.proc, 'SIGKILL', true)
     this.log(`crush: server ${why}`)
     b.onGone(why)
   }
@@ -387,7 +381,7 @@ export class CrushProvider implements Provider {
     if (!b.gone) b.gone = 'stopped'
     this.backends.delete(b)
     b.stream?.destroy()
-    if (killGroup(b.proc, 'SIGTERM')) setTimeout(() => killGroup(b.proc, 'SIGKILL'), 3000).unref()
+    if (killGroup(b.proc, 'SIGTERM', true)) setTimeout(() => killGroup(b.proc, 'SIGKILL', true), 3000).unref()
   }
 
 
@@ -540,7 +534,7 @@ export class CrushProvider implements Provider {
 
   kill(session: Session) {
     const st = this.stateOf(session)
-    return st ? killGroup(st.backend.proc, 'SIGKILL') : this.abortOpening(session)
+    return st ? killGroup(st.backend.proc, 'SIGKILL', true) : this.abortOpening(session)
   }
 
   isBusy(session: Session) { return this.opening.has(session) || !!this.stateOf(session)?.turn }

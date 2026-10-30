@@ -8,6 +8,7 @@
 // Stands in for the codex app-server in tests: answers the adapter's calls,
 // logs to BITFROST_TEST_LOG, replays fixtures/codex/approval.jsonl per turn.
 import { appendFileSync, readFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
@@ -57,6 +58,12 @@ function play() {
   }
 }
 
+log({ env: Object.keys(process.env).filter((k) => /^(CLAUDE|ANTHROPIC)/.test(k)).sort() })
+// A process the app started, as a command it is running would be; it outlives the app unless its group is stopped.
+if (process.env.BITFROST_FAKE_GRANDCHILD) {
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' })
+  appendFileSync(process.env.BITFROST_FAKE_GRANDCHILD, String(child.pid))
+}
 process.stdin.on('close', () => process.exit(0))
 process.stdout.on('error', () => process.exit(0))
 

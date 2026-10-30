@@ -546,3 +546,28 @@ test('a Codex handshake that never answers is given up on, and the next start sp
   const session = await spawn(adapter)
   assert.ok(session.info.id)
 })
+
+test('the Codex app-server is started without Claude Code\'s session variables', async (t) => {
+  const { adapter, logFile } = start(t)
+  const names = ['CLAUDE_CODE_MESSAGING_TOKEN', 'ANTHROPIC_API_KEY']
+  for (const n of names) process.env[n] = 'secret'
+  process.env.CLAUDE_CONFIG_DIR = '/profile'
+  t.after(() => { for (const n of [...names, 'CLAUDE_CONFIG_DIR']) delete process.env[n] })
+  await adapter.warm()
+  await until('the app-server to report its environment', () => readLog(logFile).some((e) => e.env))
+  assert.deepEqual(readLog(logFile).find((e) => e.env).env, ['CLAUDE_CONFIG_DIR'])
+})
+
+test('disposing the adapter stops what the app-server started, not only the app-server', async (t) => {
+  const { adapter, logFile } = start(t)
+  const pidFile = path.join(path.dirname(logFile), 'grandchild.pid')
+  process.env.BITFROST_FAKE_GRANDCHILD = pidFile
+  t.after(() => delete process.env.BITFROST_FAKE_GRANDCHILD)
+  await adapter.warm()
+  await until('the app to start a process', () => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8') !== '')
+  const pid = Number(fs.readFileSync(pidFile, 'utf8'))
+  t.after(() => { try { process.kill(pid, 'SIGKILL') } catch {} })
+  process.kill(pid, 0) // it is running
+  adapter.dispose()
+  await until('the started process to stop', () => { try { process.kill(pid, 0); return false } catch { return true } })
+})
