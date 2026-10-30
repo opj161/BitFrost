@@ -66,6 +66,7 @@ let claudeSession = null
 let renewal = null // the lease timer
 let setupRetry = null // the timer that tries to connect again after a failed start
 let live = false // between this session's start and its own end
+let ended = false // the session genuinely ended (session.end ran); a reload resets this, so recovery can heal a reloaded session
 const agents = new Map()
 // An agent by its name, or by one it had before names were shortened, so saved and resumed subagents still find it.
 const agentNamed = (name) => agents.get(name) ?? [...agents.values()].find((d) => d.legacy?.includes(name))
@@ -205,6 +206,7 @@ async function syncAgents($) {
   }
   const names = new Set(found.map((def) => def.name))
   for (const name of agents.keys()) if (!names.has(name)) agents.delete(name)
+  let registered = 0
   for (const def of found) {
     if (JSON.stringify(agents.get(def.name)) === JSON.stringify(def)) continue
     try {
@@ -226,10 +228,19 @@ async function syncAgents($) {
       continue
     }
     agents.set(def.name, def)
+    registered++
   }
   if (found.length && !agents.size) {
     lastSyncError = 'no models could be registered'
     throw new Error('no models could be registered')
+  }
+  // Late registrations dispatch from the next turn on; ask the engine to
+  // re-evaluate offered types now so a healed session need not restart.
+  // Engines without refreshAgents throw here; the types still arrive next turn.
+  if (registered) {
+    try {
+      await $.session.refreshAgents()
+    } catch {}
   }
   lastSyncError = null
   agentsAt = at
@@ -263,10 +274,10 @@ async function connect($, profile) {
 function retryConnect($, profile, attempt) {
   setupRetry?.cancel()
   setupRetry = null
-  if (attempt > SETUP_RETRIES || !live) return
+  if (attempt > SETUP_RETRIES || ended) return
   setupRetry = $.clock.after(SETUP_RETRY_MS, () => {
     setupRetry = null
-    if (!live) return
+    if (ended) return
     void connect($, profile).catch((err) => {
       if (err.status === 503 && err.daemonError) return tellConfigError($, err.daemonError)
       if (err.status !== 403) retryConnect($, profile, attempt + 1)
@@ -307,9 +318,9 @@ async function recoverModels($) {
 
 // Heals a session whose start never registered the models, on any turn that
 // begins without them. Ended sessions stay quiet: their agents were dropped
-// on purpose.
+// on purpose. A reload resets ended, so a reloaded session heals too.
 async function maybeRecover($) {
-  if (!live || agents.size || syncing || setupRetry || recovering) return
+  if (ended || agents.size || syncing || setupRetry || recovering) return
   recovering = true
   $.clock.after(SETUP_RETRY_MS, () => {
     recovering = false
@@ -1518,6 +1529,7 @@ export const register = (on) => {
     // Known before anything slow, so the end of the session this one replaced can tell it is not ours.
     claudeSession = await $.session.id()
     live = true
+    ended = false // a new session heals like a fresh load, even after an end arrived late
     setupRetry?.cancel()
     setupRetry = null
     try {
@@ -1556,6 +1568,7 @@ export const register = (on) => {
     // It must not take down the new session's lease, models and tools.
     if (e.sessionId && claudeSession && e.sessionId !== claudeSession) return next(e)
     live = false
+    ended = true
     setupRetry?.cancel()
     setupRetry = null
     for (const [agentId, st] of foreign) await saveRecord($, agentId, st, true)

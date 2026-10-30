@@ -313,6 +313,22 @@ const addToolResult = (w: any, agentId: string, id: string, text: string) => {
   w.rows[agentId].push({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] })
 }
 
+// Runs first: the module just loaded (as after /reload-plugins), so no
+// session.start ran, no lease exists and the session did not end. A turn
+// must still heal the session by itself.
+test('a reloaded session heals without a new session start', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
+  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  // A lease was taken and the model registered, with no session.start in this test.
+  expect((w.posts['/leases'] ?? []).length).toBeGreaterThan(0)
+  expect(w.registered.map((r: any) => r.name)).toContain('gpt-6-sol')
+  expect(context.blocks.map((b: any) => b.name)).toContain('bitfrostModels')
+  // Clear this turn's recovery flag and renewal, as later tests do for theirs.
+  await w.clock.advance(15_000)
+  await w.clock.settle()
+})
+
 test('session.start asks bitfrostd for its socket, then health, lease and agents', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)
