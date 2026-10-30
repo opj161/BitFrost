@@ -1552,7 +1552,9 @@ export const register = (on) => {
     // costs one quiet check per window, and a dead helper falls back to the
     // bounded retries instead of stalling every turn. Ended sessions stay
     // quiet: their agents were dropped on purpose.
-    await maybeRecover($)
+    // In the background: models registered now are dispatched from the next turn anyway, so waiting on a
+    // helper that is slow or down would only stall this turn. The prompt block is rebuilt when they arrive.
+    void maybeRecover($).catch(() => {})
     const r = await next(e)
     if (!nameTable) return r
     const blocks = [...r.blocks.filter((b) => b.name !== 'bitfrostModels' && b.name !== 'bitfrostTools'), { name: 'bitfrostModels', text: nameTable }]

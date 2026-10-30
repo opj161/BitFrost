@@ -319,10 +319,12 @@ const addToolResult = (w: any, agentId: string, id: string, text: string) => {
 test('a reloaded session heals without a new session start', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
-  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await w.clock.settle()
   // A lease was taken and the model registered, with no session.start in this test.
   expect((w.posts['/leases'] ?? []).length).toBeGreaterThan(0)
   expect(w.registered.map((r: any) => r.name)).toContain('gpt-6-sol')
+  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
   expect(context.blocks.map((b: any) => b.name)).toContain('bitfrostModels')
   // Clear this turn's recovery flag and renewal, as later tests do for theirs.
   await w.clock.advance(15_000)
@@ -422,8 +424,11 @@ test('a turn that starts with no models reconnects and registers them', { timeou
   expect(w.registered).toEqual([])
 
   w.fake.agentsReply = { agents: [SOL], nameTable: NAME_TABLE, at: 2 }
-  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  // Recovery runs in the background, so this turn is not held up; the next one has the models.
+  await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await w.clock.settle()
   expect(w.registered.map((r: any) => r.name)).toEqual(['gpt-6-sol'])
+  const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
   expect(context.blocks.map((b: any) => b.name)).toEqual(['base', 'bitfrostModels'])
   expect(context.blocks[1].text).toBe(NAME_TABLE)
 })
@@ -450,6 +455,7 @@ test('a failed recovery schedules a retry instead of stalling the turn', { timeo
   w.fake.healthFailure = 'transport'
   const context = await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
   expect(context.blocks.map((b: any) => b.name)).toEqual(['base'])
+  await w.clock.settle()
   const healthCalls = () => w.calls.filter((c) => c.path === '/health').length
   const before = healthCalls()
   await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
@@ -2053,6 +2059,7 @@ test('a /clear ends the session id but the next turn registers the models for th
   expect(w.calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual([`/leases/${w.leaseId}`])
   w.registered.length = 0
   await $.prompt.context({ blocks: [{ name: 'base', text: 'base context' }] } as any)
+  await w.clock.settle()
   expect(leases()).toBe(before + 1)
   expect(w.registered.map((r: any) => r.name)).toContain('gpt-6-sol')
   await w.clock.advance(15_000)
