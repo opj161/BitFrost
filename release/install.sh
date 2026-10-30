@@ -125,6 +125,20 @@ main() {
   mkdir -p "$BIN_DIR"
   link=$BIN_DIR/bitfrost
   [ ! -e "$link" ] || [ -L "$link" ] || die "$link exists and isn't a link; move it away and run this again"
+  # Put the files in place first, so that once the database has moved on only the link swap is left to fail.
+  # Nothing uses them until that swap. A failed move gives the old copy back rather than lose it.
+  if [ "$root" != "$DATA/versions/$version" ]; then
+    if [ -d "$DATA/versions/$version" ]; then
+      mv "$DATA/versions/$version" "$tmp/old" || die "can't replace $DATA/versions/$version"
+    fi
+    mv "$root" "$DATA/versions/$version" || {
+      [ ! -d "$tmp/old" ] || mv "$tmp/old" "$DATA/versions/$version"
+      die "can't move $version into $DATA/versions"
+    }
+    root=$DATA/versions/$version
+    done_ "Unpacked" "$(short "$root")"
+  fi
+
   # Migrate before activating the new files, even after an uninstall that kept
   # history. The shell keeps the data lock until installation finishes.
   migration_entry=$root/plugins/bitfrost/bin/bitfrostd
@@ -135,14 +149,6 @@ main() {
     wait "$migration_job" || die "database migration failed; the new version was not activated"
     migration_job=
     done_ "Database" "schema and data are current"
-  fi
-
-  if [ "$root" != "$DATA/versions/$version" ]; then
-    if [ -d "$DATA/versions/$version" ]; then
-      mv "$DATA/versions/$version" "$tmp/old"
-    fi
-    mv "$root" "$DATA/versions/$version"
-    done_ "Unpacked" "$(short "$DATA/versions/$version")"
   fi
 
   # Only replace a link. mv would put the new link inside a real folder.
