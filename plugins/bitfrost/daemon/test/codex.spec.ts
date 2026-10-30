@@ -547,7 +547,7 @@ test('a Codex handshake that never answers is given up on, and the next start sp
   assert.ok(session.info.id)
 })
 
-test('the Codex app-server is started without Claude Code\'s session variables', async (t) => {
+test('the Codex app-server is started without Claude Code\'s session variables, and keeps the user\'s keys', async (t) => {
   const { adapter, logFile } = start(t)
   const names = ['CLAUDE_CODE_MESSAGING_TOKEN', 'ANTHROPIC_API_KEY']
   for (const n of names) process.env[n] = 'secret'
@@ -555,7 +555,7 @@ test('the Codex app-server is started without Claude Code\'s session variables',
   t.after(() => { for (const n of [...names, 'CLAUDE_CONFIG_DIR']) delete process.env[n] })
   await adapter.warm()
   await until('the app-server to report its environment', () => readLog(logFile).some((e) => e.env))
-  assert.deepEqual(readLog(logFile).find((e) => e.env).env, ['CLAUDE_CONFIG_DIR'])
+  assert.deepEqual(readLog(logFile).find((e) => e.env).env, ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR'])
 })
 
 test('disposing the adapter stops what the app-server started, not only the app-server', async (t) => {

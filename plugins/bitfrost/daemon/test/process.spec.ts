@@ -14,11 +14,13 @@ test('apps get the helper\'s environment without Claude Code\'s own session vari
   Object.assign(process.env, set)
   t.after(() => { for (const k of Object.keys(set)) if (before[k] === undefined) delete process.env[k]; else process.env[k] = before[k] })
   const env = appEnv()
-  for (const name of ['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'CLAUDE_PLUGIN_DATA', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'])
+  for (const name of ['CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT', 'CLAUDE_PLUGIN_DATA'])
     assert.equal(env[name], undefined, name)
-  // The user's own settings for the app stay, and what the caller asks for wins, even a name that is dropped.
+  // What the user set for the apps stays, including Anthropic keys an app may use, and what the caller asks for wins.
+  assert.equal(env.ANTHROPIC_API_KEY, 'k')
+  assert.equal(env.ANTHROPIC_BASE_URL, 'u')
   assert.equal(env.CLAUDE_CONFIG_DIR, '/profile')
   assert.equal(env.OPENAI_API_KEY, 'mine')
   assert.equal(env.PATH, process.env.PATH)
-  assert.equal(appEnv({ ANTHROPIC_API_KEY: 'chosen' }).ANTHROPIC_API_KEY, 'chosen')
+  assert.equal(appEnv({ CLAUDE_CODE_SESSION_ID: 'chosen' }).CLAUDE_CODE_SESSION_ID, 'chosen')
 })

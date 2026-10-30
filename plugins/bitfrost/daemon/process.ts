@@ -8,10 +8,11 @@ import fs from 'node:fs'
 import { execFileSync, type ChildProcess } from 'node:child_process'
 
 // The environment another company's app gets from the helper. The helper is often started by a Claude Code
-// session, whose own session token, socket and settings sit in its environment; they are Claude Code's, not for
-// an app that is not it or for the shell commands that app runs. Anything the user set for the app itself
-// (CLAUDE_CONFIG_DIR, an API key under another name) and anything in `extra` still goes through.
-const CLAUDE_CODE_OWN = /^(ANTHROPIC_|CLAUDE_CODE_|CLAUDE_PLUGIN_)|^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT)$/
+// session, whose own session token, socket and handles sit in its environment; they belong to that session, not
+// to an app that is not Claude Code or to the shell commands that app runs. Nothing else is held back: keys and
+// settings the user set (ANTHROPIC_API_KEY for an app that uses it, CLAUDE_CONFIG_DIR) pass through, as does
+// anything in `extra`.
+const CLAUDE_CODE_OWN = /^(CLAUDE_CODE_|CLAUDE_PLUGIN_)|^(CLAUDECODE|CLAUDE_PID|CLAUDE_EFFORT)$/
 export function appEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {}
   for (const [name, value] of Object.entries(process.env)) if (!CLAUDE_CODE_OWN.test(name)) env[name] = value
