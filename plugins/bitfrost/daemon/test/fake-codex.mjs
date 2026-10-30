@@ -70,7 +70,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   if (msg.method) {
     log({ method: msg.method, params: msg.params })
     if (msg.id === undefined) return
-    if (msg.method === 'initialize') write({ id: msg.id, result: {} })
+    if (msg.method === 'initialize') { if (!process.env.BITFROST_FAKE_INIT_HANG) write({ id: msg.id, result: {} }) }
     else if (msg.method === 'model/list') write({ id: msg.id, result: { data: MODELS, nextCursor: null } })
     else if (msg.method === 'thread/start') {
       threadId = `thr_${randomUUID()}`

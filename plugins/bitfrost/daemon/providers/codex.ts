@@ -96,6 +96,7 @@ export class CodexAdapter implements Provider {
   private questions = new Map<string, { rpcId: number | string; questions: Question[]; session: Session }>()
   private autoReview = new Set<string>()
   private bin: string
+  handshakeMs = 60_000 // how long initialize may take before the app-server is given up on
   private relocate?: () => string | null
   private log: (msg: string) => void
   private record: ((line: string) => void) | null
@@ -166,11 +167,18 @@ export class CodexAdapter implements Provider {
         }
         this.onMessage(msg)
       })
-      await this.request('initialize', {
-        clientInfo: { name: 'bitfrost', title: 'bitfrost', version: '0.1.0' },
-        capabilities: { experimentalApi: true },
-      })
-      this.send({ method: 'initialized' })
+      try {
+        await this.request('initialize', {
+          clientInfo: { name: 'bitfrost', title: 'bitfrost', version: '0.1.0' },
+          capabilities: { experimentalApi: true },
+        }, this.handshakeMs)
+        this.send({ method: 'initialized' })
+      } catch (error) {
+        // A handshake that failed or never answered must not be remembered, or every later start waits on it.
+        if (this.proc === proc) { this.proc = null; this.ready = null }
+        proc.kill()
+        throw error
+      }
     })()
     return this.ready
   }

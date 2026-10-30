@@ -535,3 +535,14 @@ test('a request Codex settles itself leaves no approval or question waiting', as
   const resolved = s.events.find((e) => e.type === 'approval_resolved') as any
   assert.equal(resolved.approvalId, approval.approvalId)
 })
+
+test('a Codex handshake that never answers is given up on, and the next start spawns a fresh app-server', async (t) => {
+  const { adapter } = start(t)
+  adapter.handshakeMs = 300
+  process.env.BITFROST_FAKE_INIT_HANG = '1'
+  await assert.rejects(adapter.warm(), /initialize timed out/)
+  delete process.env.BITFROST_FAKE_INIT_HANG
+  await adapter.warm() // a cached failure would reject again
+  const session = await spawn(adapter)
+  assert.ok(session.info.id)
+})
