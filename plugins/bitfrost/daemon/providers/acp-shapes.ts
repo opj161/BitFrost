@@ -4,7 +4,7 @@
 // BitFrost is free software: you can share and change it under the GNU General
 // Public License, version 3 only. It comes with no warranty. See LICENSE.
 
-import type { Decision, FileChange, Question } from '../events.ts'
+import type { Decision, EndReason, FileChange, Question } from '../events.ts'
 export { globMatch } from '../registry.ts'
 
 type Json = any
@@ -291,3 +291,35 @@ export function unifiedDiff(oldText: string | null, newText: string): string {
 }
 
 const linesOf = (text: string) => (text === '' ? [] : text.replace(/\n$/, '').split('\n'))
+
+const STOP_WORDS: Record<string, string> = {
+  max_tokens: 'it reached its output limit',
+  max_turn_requests: 'it reached its limit of model requests for one turn',
+  refusal: 'the model refused to continue',
+}
+const STOP_REASONS: Record<string, EndReason> = { end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' }
+
+// Some apps end a turn of their own accord with the stop reason `cancelled` and say why in _meta. Grok's
+// categories are in xai-grok-shell session/commands.rs; the others (a hook, a permission, a user abort) are
+// cancellations like any other.
+const CANCEL_CATEGORIES: Record<string, { reason: EndReason; why: string }> = {
+  max_turns_reached: { reason: 'max_requests', why: 'it reached its limit of turns' },
+  action_stationarity: { reason: 'error', why: 'it kept repeating the same action' },
+}
+
+export type TurnEnd = { status: 'completed' | 'interrupted' | 'failed'; reason: EndReason; why: string | null }
+
+// How a prompt ended. `cancelled` is that BitFrost cancelled it, `denied` a permission it just refused, and
+// `error` a failure of the request itself.
+export function classifyTurnEnd(i: { stop: string; meta?: Json; cancelled: boolean; wrongModel: string | null; denied: { reason?: string } | null; error: string | null; displayName: string; model: string }): TurnEnd {
+  const { stop, cancelled, wrongModel, denied, error } = i
+  const ownEnd = !wrongModel && !denied && stop === 'cancelled' && !cancelled ? CANCEL_CATEGORIES[String(objectOf(i.meta).cancellationCategory)] : undefined
+  if (ownEnd) return { status: 'failed', reason: ownEnd.reason, why: error ?? ownEnd.why }
+  const interrupted = cancelled || stop === 'cancelled'
+  const status = wrongModel || (error && !cancelled) ? 'failed' : interrupted ? 'interrupted' : stop === 'end_turn' ? 'completed' : 'failed'
+  const reason: EndReason = wrongModel ? 'wrong_model' : denied ? 'permission_denied' : interrupted ? 'interrupted' : error ? 'error' : STOP_REASONS[stop] ?? 'error'
+  const why = wrongModel
+    ? `${i.displayName} switched to ${wrongModel} instead of ${i.model}; stopped it`
+    : (denied?.reason ?? error ?? (status === 'failed' ? (STOP_WORDS[stop] ?? `it stopped (${stop})`) : null))
+  return { status, reason, why }
+}

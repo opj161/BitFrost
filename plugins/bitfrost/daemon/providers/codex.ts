@@ -91,6 +91,7 @@ export class CodexAdapter implements Provider {
   private starting = new Set<Session>()
   private interruptedStarts = new Set<Session>()
   private turnText = new Map<string, string>()
+  private rerouted = new Map<string, string>() // turn id to the model Codex moved it to
   private approvals = new Map<string, { rpcId: number | string; method: string; params: Json; session: Session }>()
   private questions = new Map<string, { rpcId: number | string; questions: Question[]; session: Session }>()
   private autoReview = new Set<string>()
@@ -507,6 +508,26 @@ export class CodexAdapter implements Provider {
         emit({ type: 'auto_reviewed', itemId: p.targetItemId ?? null, action, decision: String(p.review?.status ?? 'unknown'), reason: p.review?.rationale ?? '' })
         return
       }
+      case 'serverRequest/resolved': {
+        // Codex settled a request itself, as it does when a turn aborts, so nobody can answer it any more.
+        for (const [id, a] of this.approvals) if (a.session === session && a.rpcId === p.requestId) {
+          this.approvals.delete(id)
+          emit({ type: 'approval_resolved', approvalId: id, decision: 'deny' })
+        }
+        for (const [id, q] of this.questions) if (q.session === session && q.rpcId === p.requestId) {
+          this.questions.delete(id)
+          emit({ type: 'question_answered', questionId: id, how: 'deferred' })
+        }
+        return
+      }
+      case 'model/rerouted': {
+        // Codex moved the turn to another model. Say so and stop it rather than bill and report the wrong one.
+        if (!p.turnId || this.rerouted.has(p.turnId)) return
+        this.rerouted.set(p.turnId, String(p.toModel ?? 'another model'))
+        this.log(`codex rerouted ${p.threadId} from ${p.fromModel} to ${p.toModel} (${p.reason}); stopping the turn`)
+        void this.interrupt(session).catch((error) => this.log(`codex interrupt after reroute failed: ${(error as Error).message}`))
+        return
+      }
       case 'thread/tokenUsage/updated': {
         const last = p.tokenUsage?.last
         if (last) {
@@ -524,8 +545,12 @@ export class CodexAdapter implements Provider {
         return
       case 'turn/completed': {
         const t = p.turn
-        const status = t.status === 'interrupted' ? 'interrupted' : t.status === 'failed' ? 'failed' : 'completed'
-        emit({ type: 'turn_completed', turnId: t.id, status, reason: codexEndReason(status, t.error), finalText: this.turnText.get(t.id) ?? session.live?.partialText ?? '', error: errorText(t.error?.message) })
+        const moved = this.rerouted.get(t.id)
+        this.rerouted.delete(t.id)
+        const status = moved ? 'failed' : t.status === 'interrupted' ? 'interrupted' : t.status === 'failed' ? 'failed' : 'completed'
+        const reason = moved ? 'wrong_model' : codexEndReason(status, t.error)
+        const error = moved ? `Codex switched to ${moved} instead of ${session.info.model}; stopped it` : errorText(t.error?.message)
+        emit({ type: 'turn_completed', turnId: t.id, status, reason, finalText: this.turnText.get(t.id) ?? session.live?.partialText ?? '', error })
         this.turnText.delete(t.id)
         return
       }

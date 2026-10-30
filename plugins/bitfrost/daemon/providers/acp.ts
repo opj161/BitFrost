@@ -10,10 +10,10 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createInterface } from 'node:readline'
-import type { Decision, EndReason, Question } from '../events.ts'
+import type { Decision, Question } from '../events.ts'
 import type { HarnessModel, Provider, ProviderCapabilities, SpawnRequest } from '../provider.ts'
 import type { Session } from '../session.ts'
-import { asClaudeTool, blankTool, choicesOf, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange, isShellTool } from './acp-shapes.ts'
+import { asClaudeTool, blankTool, choicesOf, classifyTurnEnd, commandOf, confirmShape, cwdOf, describeAction, exitCodeOf, FILE_KINDS, fileChange, isShellTool } from './acp-shapes.ts'
 import { formContent, globMatch, grantKeyOf, hasInput, isSelect, objectOf, outputOf, permissionOutcome, summaryOf, toQuestion, vendorOf, type ToolCall } from './acp-shapes.ts'
 
 type Json = any
@@ -30,11 +30,6 @@ const INIT_MS = 120_000
 const PARK_MS = 5 * 60_000
 // Long thinking shows as it goes: whole lines are released this often.
 const REASONING_FLUSH_MS = 1500
-const STOPS: Record<string, string> = {
-  max_tokens: 'it reached its output limit',
-  max_turn_requests: 'it reached its limit of model requests for one turn',
-  refusal: 'the model refused to continue',
-}
 
 export type AcpAgentSpec = {
   id: string
@@ -650,11 +645,6 @@ export class AcpProvider implements Provider {
       }
     }
     const stop = r.stopReason
-    const status =
-      turn.wrongModel || (error && !turn.cancelled) ? 'failed'
-      : turn.cancelled || stop === 'cancelled' ? 'interrupted'
-      : stop === 'end_turn' ? 'completed'
-      : 'failed'
     // v2 cancels the prompt when a permission is rejected (v1 ended the turn),
     // so a recent denial must win over the cancelled branch. `denied` already
     // excludes turns BitFrost cancelled itself, keeping interrupt/restart
@@ -662,10 +652,7 @@ export class AcpProvider implements Provider {
     // cancel round-trip on a loaded machine; it cannot leak across turns
     // because denials live on the finished turn object.
     const denied = stop !== 'end_turn' && !turn.cancelled && !turn.wrongModel && turn.denied && Date.now() - turn.denied.at <= 10_000 ? turn.denied : null
-    const reason: EndReason = turn.wrongModel ? 'wrong_model' : denied ? 'permission_denied' : turn.cancelled || stop === 'cancelled' ? 'interrupted' : error ? 'error' : ({ end_turn: 'end_turn', max_tokens: 'max_tokens', max_turn_requests: 'max_requests', refusal: 'refusal' } as Record<string, EndReason>)[stop] ?? 'error'
-    const why = turn.wrongModel
-      ? `${this.displayName} switched to ${turn.wrongModel} instead of ${st.model}; stopped it`
-      : (denied?.reason ?? error ?? (status === 'failed' ? (STOPS[stop] ?? `it stopped (${stop})`) : null))
+    const { status, reason, why } = classifyTurnEnd({ stop, meta: r._meta, cancelled: turn.cancelled, wrongModel: turn.wrongModel, denied, error, displayName: this.displayName, model: st.model })
     st.turn = null
     st.epoch++
     st.session.push({ type: 'turn_completed', turnId: turn.id, status, reason, finalText: turn.finalText, ...(why ? { error: why } : {}) })

@@ -505,3 +505,33 @@ test('Codex usage identities distinguish equal requests while preserving streami
   await until('second turn usage', () => s.events.filter((e) => e.type === 'usage').length === 6)
   assert.notEqual((s.events.filter((e) => e.type === 'usage') as any[])[3].requestId, firstId)
 })
+
+test('a turn Codex moves to another model is interrupted and ends as the wrong model', async (t) => {
+  const { adapter, logFile } = start(t)
+  const file = path.join(path.dirname(logFile), 'reroute.jsonl')
+  fs.writeFileSync(file, [
+    { method: 'turn/started', params: { threadId: 'thr1', turn: { id: 'turn1' } } },
+    { method: 'model/rerouted', params: { threadId: 'thr1', turnId: 'turn1', fromModel: 'gpt-test', toModel: 'gpt-other', reason: 'highRiskCyberActivity' } },
+  ].map((e) => JSON.stringify(e)).join('\n'))
+  process.env.BITFROST_FAKE_CODEX_SCRIPT = file
+  t.after(() => delete process.env.BITFROST_FAKE_CODEX_SCRIPT)
+  const s = await spawn(adapter)
+  await untilLogged(logFile, 'turn/interrupt')
+  await until('the turn to end', () => s.events.some((e) => e.type === 'turn_completed'))
+  const end = s.events.find((e) => e.type === 'turn_completed') as any
+  assert.equal(end.status, 'failed')
+  assert.equal(end.reason, 'wrong_model')
+  assert.match(end.error, /gpt-other instead of gpt-test/)
+})
+
+test('a request Codex settles itself leaves no approval or question waiting', async (t) => {
+  const { adapter } = start(t)
+  const s = await spawn(adapter)
+  const approval = await firstApproval(s)
+  assert.deepEqual(adapter.pendingApprovals(s), [approval.approvalId])
+  ;(adapter as any).onNotification('serverRequest/resolved', { threadId: s.info.id, requestId: 'req-approval-1' })
+  assert.deepEqual(adapter.pendingApprovals(s), [])
+  assert.equal(adapter.resolveApproval(s, approval.approvalId, 'allow'), false)
+  const resolved = s.events.find((e) => e.type === 'approval_resolved') as any
+  assert.equal(resolved.approvalId, approval.approvalId)
+})

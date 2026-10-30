@@ -1028,3 +1028,20 @@ test('only a select named model stands in for a missing model category', () => {
   assert.ok(!model({ id: 'model', type: 'boolean' }))
   assert.ok(!isSelect('thought_level')({ id: 'model', type: 'select' }))
 })
+
+test('a turn Grok ends itself with stopReason cancelled is a limit, not a user interruption', async () => {
+  const { classifyTurnEnd } = await import('../providers/acp-shapes.ts')
+  const base = { cancelled: false, wrongModel: null, denied: null, error: null, displayName: 'Grok', model: 'grok-4.7' }
+  const end = (over: Record<string, unknown>) => classifyTurnEnd({ ...base, stop: 'cancelled', ...over } as any)
+  assert.deepEqual(end({ meta: { cancellationCategory: 'max_turns_reached' } }), { status: 'failed', reason: 'max_requests', why: 'it reached its limit of turns' })
+  assert.equal(end({ meta: { cancellationCategory: 'action_stationarity' } }).reason, 'error')
+  // A user stop, a permission reject and an unknown category stay interruptions, and so does our own cancel.
+  for (const meta of [{ cancellationCategory: 'MidTurnAbort' }, { cancellationCategory: 'PermissionRejected' }, {}, undefined])
+    assert.deepEqual(end({ meta }), { status: 'interrupted', reason: 'interrupted', why: null })
+  assert.equal(end({ cancelled: true, meta: { cancellationCategory: 'max_turns_reached' } }).reason, 'interrupted')
+  // The rest of the table is as it was.
+  assert.deepEqual(classifyTurnEnd({ ...base, stop: 'end_turn' }), { status: 'completed', reason: 'end_turn', why: null })
+  assert.deepEqual(classifyTurnEnd({ ...base, stop: 'refusal' }), { status: 'failed', reason: 'refusal', why: 'the model refused to continue' })
+  assert.equal(classifyTurnEnd({ ...base, stop: 'end_turn', wrongModel: 'x' }).reason, 'wrong_model')
+  assert.equal(classifyTurnEnd({ ...base, stop: 'cancelled', denied: { reason: 'no' } }).reason, 'permission_denied')
+})
