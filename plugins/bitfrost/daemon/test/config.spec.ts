@@ -12,7 +12,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
-import { configKey, ensureRunDir, loadConfig, runDirTrusted, takeLock, validateConfig } from '../config.ts'
+import { startTimeOf } from '../process.ts'
+import { configKey, ensureRunDir, holdsLock, loadConfig, runDirTrusted, takeLock, validateConfig } from '../config.ts'
 import { buildAgents, describe } from '../registry.ts'
 import { pendingFeatures } from '../features.ts'
 const demos = pendingFeatures({ handback: {} }).map((f) => f.id)
@@ -99,7 +100,7 @@ test('takeLock: one holder at a time, and a lock left empty or by a dead helper 
   const lock = path.join(dir, 'bitfrostd.lock')
 
   assert.strictEqual(takeLock(lock), true)
-  assert.strictEqual(fs.readFileSync(lock, 'utf8'), String(process.pid))
+  assert.ok(holdsLock(lock, process.pid))
   assert.strictEqual(takeLock(lock), true) // already ours
   assert.deepStrictEqual(fs.readdirSync(dir), ['bitfrostd.lock']) // no temp file left behind
 
@@ -112,7 +113,7 @@ test('takeLock: one holder at a time, and a lock left empty or by a dead helper 
   for (const left of ['', 'garbage', '0', '-1', String(dead)]) {
     fs.writeFileSync(lock, left)
     assert.strictEqual(takeLock(lock), true, `lock holding ${JSON.stringify(left)}`)
-    assert.strictEqual(fs.readFileSync(lock, 'utf8'), String(process.pid))
+    assert.ok(holdsLock(lock, process.pid))
   }
 })
 
@@ -292,4 +293,20 @@ test('the runtime directory is used only when it is a real directory that nobody
   assert.strictEqual(runDirTrusted(link), false)
   assert.throws(() => ensureRunDir(link), /not using it/)
   assert.strictEqual(runDirTrusted(path.join(base, 'missing')), false)
+})
+
+test('takeLock: a lock left by a process whose pid another process now has is taken over', (t) => {
+  const lock = path.join(tempDir(t), 'bitfrostd.lock')
+  const started = startTimeOf(process.ppid)
+  assert.ok(started, 'the parent process has a start time here')
+  // The same process that took the lock is still running: held. A lock from the old format has no start time: held.
+  fs.writeFileSync(lock, `${process.ppid} ${started}`)
+  assert.strictEqual(takeLock(lock), false)
+  fs.writeFileSync(lock, String(process.ppid))
+  assert.strictEqual(takeLock(lock), false)
+  // The pid is alive but it started at another time, so it is not the holder.
+  fs.writeFileSync(lock, `${process.ppid} 1`)
+  assert.strictEqual(takeLock(lock), true)
+  assert.ok(holdsLock(lock, process.pid))
+  assert.match(fs.readFileSync(lock, 'utf8'), new RegExp(`^${process.pid} \\S+`))
 })

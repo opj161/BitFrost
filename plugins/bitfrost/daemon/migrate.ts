@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { DATA_DIR, DATA_LOCK, takeLock } from './config.ts'
+import { DATA_DIR, DATA_LOCK, holdsLock, takeLock } from './config.ts'
 import { DB_VERSION } from './db-version.ts'
 
 export async function migrateDatabase(stop: () => Promise<string | null>, installer = false) {
@@ -49,7 +49,7 @@ export async function migrateDatabase(stop: () => Promise<string | null>, instal
     })
   } finally {
     if (!installer) {
-      try { if (fs.readFileSync(DATA_LOCK, 'utf8') === String(owner)) fs.rmSync(DATA_LOCK) } catch {}
+      try { if (holdsLock(DATA_LOCK, owner)) fs.rmSync(DATA_LOCK) } catch {}
     }
   }
 }

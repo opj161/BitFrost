@@ -19,7 +19,7 @@ function stat(pid: number) {
   return { pgid: Number(fields[2]), startTime: fields[19] }
 }
 
-function startTimeOf(pid: number): string | null {
+export function startTimeOf(pid: number): string | null {
   try {
     return process.platform === 'linux' ? stat(pid).startTime : execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim()
   } catch { return null }

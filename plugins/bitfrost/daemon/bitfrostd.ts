@@ -48,7 +48,7 @@ import { Store } from './store.ts'
 import { killOwnedGroups, ownProcesses } from './process.ts'
 import { Session } from './session.ts'
 import { buildAgents, describe, nameTable, selectModels, whyNot, type AgentDef, type HarnessModel } from './registry.ts'
-import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, ensureRunDir, loadConfig, log, loginShellLookup, pathLookup, providerEnv, takeLock, type Config } from './config.ts'
+import { CACHE, CONFIG, DATA_DIR, DATA_LOCK, LOCK, LOG, RUN_DIR, SOCKET, VERSION, canonical, configKey, ensureRunDir, holdsLock, loadConfig, log, loginShellLookup, pathLookup, providerEnv, takeLock, type Config } from './config.ts'
 import { LEASE_TTL_MS, SessionTable, monotonic } from './leases.ts'
 import type { Provider, ProviderFactory } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
@@ -127,7 +127,7 @@ function serve() {
   const locks = [LOCK]
   process.on('exit', () => {
     try {
-      for (const lock of locks) if (fs.readFileSync(lock, 'utf8') === String(process.pid)) fs.rmSync(lock)
+      for (const lock of locks) if (holdsLock(lock, process.pid)) fs.rmSync(lock)
     } catch {}
   })
 
@@ -805,7 +805,7 @@ async function stop(): Promise<string | null> {
   if (!r) return null
   if (r.status !== 200) return r.body?.error ?? `HTTP ${r.status}`
   // It stops answering before it exits, and a new helper can't start until it lets go of its locks.
-  const holds = (lock: string) => { try { return fs.readFileSync(lock, 'utf8') === String(pid) } catch { return false } }
+  const holds = (lock: string) => holdsLock(lock, pid)
   const up = async () => (Number.isSafeInteger(pid) ? holds(LOCK) || holds(DATA_LOCK) : !!(await health()))
   for (let i = 0; i < 100 && (await up()); i++) await new Promise((res) => setTimeout(res, 100))
   return (await up()) ? 'it did not exit' : null

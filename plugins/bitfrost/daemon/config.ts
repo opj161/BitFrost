@@ -11,6 +11,7 @@ import { execFile, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import type { ProviderEnv } from './provider.ts'
 import { PROVIDERS } from './providers/index.ts'
+import { startTimeOf } from './process.ts'
 import { FEATURES, EFFORTS, claudeModelId, pendingFeatures } from './features.ts'
 export { VERSION } from './version.ts'
 
@@ -200,10 +201,12 @@ export function loginShellLookup(name: string): Promise<string | null> {
   })
 }
 
-// Link a file containing the PID into place so concurrent starts cannot see an empty lock.
+// A lock holds the owner's pid, then the time that process started: the lock outlives a reboot, and a pid
+// can come back as some other process. The migrator and installer read the pid alone, and write only that.
+// Link a file containing it into place so concurrent starts cannot see an empty lock.
 function linkPid(file: string): boolean {
   const mine = `${file}.${process.pid}`
-  fs.writeFileSync(mine, String(process.pid))
+  fs.writeFileSync(mine, [process.pid, startTimeOf(process.pid)].filter((x) => x != null).join(' '))
   try {
     fs.linkSync(mine, file)
     return true
@@ -223,10 +226,25 @@ const holderOf = (file: string): number => {
   }
 }
 
+// Whether `pid` holds the lock, whatever follows its pid in the file.
+export const holdsLock = (file: string, pid: number): boolean => holderOf(file) === pid
+
+// The holder is running, and is the process that took the lock rather than a later one with its pid.
+function holderLives(file: string): boolean {
+  const pid = holderOf(file)
+  if (!alive(pid)) return false
+  let started: string | undefined
+  try {
+    started = fs.readFileSync(file, 'utf8').trim().split(/\s+/).slice(1).join(' ') || undefined
+  } catch {}
+  const now = started ? startTimeOf(pid) : null
+  return !(started && now != null && now !== started)
+}
+
 export function takeLock(lock = LOCK): boolean {
   if (linkPid(lock)) return true
   if (holderOf(lock) === process.pid) return true
-  if (alive(holderOf(lock))) return false
+  if (holderLives(lock)) return false
   // The holder is gone. Removing its lock and linking ours is not atomic, so two starters that both saw the
   // dead holder could each remove the other's fresh lock and both win. Only one starter at a time takes over,
   // and it looks at the lock again once it has the turn.
@@ -241,7 +259,7 @@ export function takeLock(lock = LOCK): boolean {
   try {
     const holder = holderOf(lock)
     if (holder === process.pid) return true
-    if (alive(holder)) return false
+    if (holderLives(lock)) return false
     fs.rmSync(lock, { force: true })
     return linkPid(lock)
   } finally {
