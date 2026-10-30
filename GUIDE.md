@@ -220,7 +220,7 @@ From the subagent runs BitFrost has recorded. The Models page shows usage for To
 
 ### Who answers a subagent's permission requests?
 
-In normal mode, you decide; no answer means Deny. In auto mode, a safety review decides instead.
+In normal mode, you decide; no answer means Deny. In auto mode, nobody is asked: your Claude Code permission rules decide, and anything they don't forbid goes ahead. No Claude model is called for this.
 
 ### What is official handback?
 

@@ -32,7 +32,7 @@ Works in Claude Code (CLI and desktop app), on Linux and macOS 12.3+.
 
 Subagent permission requests and questions come straight to you.
 
-In auto mode, Claude answers subagent questions and a safety review decides permission requests.
+In auto mode, Claude answers subagent questions and permission requests go ahead unless one of your Claude Code permission rules forbids them. No extra Claude call is made.
 
 <p align="center">
   <img src="assets/screen2.png" alt="A GPT-6.1 Sol subagent asking the user which language to use" width="768">
@@ -151,7 +151,7 @@ Ask Claude for a model by name:
 
 Claude is told at the start of each session which models you have and what they are called ("sol6", "glm", ...). If none can be offered, the session tells you why.
 
-When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode, a safety review decides instead.
+When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode (or accept-edits or bypass), nobody is asked: your Claude Code permission rules decide, and anything they don't forbid goes ahead.
 
 While a subagent waits for your answer, Claude's `status` tool shows it as waiting for permission, so a quiet agent isn't mistaken for a busy one.
 
@@ -186,7 +186,7 @@ Once Claude understands the assignment, ask it to save that as a rule in your CL
 - GLM needs a Z.ai individual coding plan. ZCode only offers Teams, Start plans, free usage, bigmodel and its other providers inside its desktop app, not to outside tools, so BitFrost can't use them.
 - Windows is not a supported platform. It may work via WSL, but it also may not.
 - Gemini CLI requires Gemini Code Assist Standard/Enterprise, Google Cloud access or a paid API key. [Google ended free and Google AI Pro/Ultra access in June 2026](https://github.com/google-gemini/gemini-cli/discussions/27274). Antigravity CLI (`agy`) isn't supported yet.
-- ZCode's own auto mode doesn't work. When Claude Code is in auto mode, BitFrost reviews GLM's permission requests with a short Claude (Sonnet) check instead, which counts toward your Claude usage.
+- ZCode's own auto mode doesn't work. When Claude Code is in auto mode, GLM's permission requests are decided by your Claude Code permission rules, like the other apps'.
 - Oh My Pi may only ask permission for commands, deletes and moves, not ordinary file edits.
 - In opencode, denying a permission request ends that subagent's turn.
 - BitFrost disables opencode's subagents and Oh My Pi's advisor, subagents and prewalk. Crush uses your selected model for helper work such as titles and summaries too.

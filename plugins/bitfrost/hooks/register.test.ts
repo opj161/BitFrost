@@ -40,7 +40,6 @@ const world = (on: any, opts: { store?: Record<string, unknown>; inside?: boolea
     renewalReply: null as { status: number; body: any } | null,
     agentsReply: { agents: [SOL], nameTable: NAME_TABLE, at: 1 } as { agents: any[]; nameTable: string; at: number; hint?: string },
     agentsFailure: false, // every GET /agents answers 500 while true
-    reviewReply: { isAnswered: true, text: 'ALLOW\nroutine work for the task.', usage: { input_tokens: 0, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
     queue: [] as Scripted[],
     inputReply: null as any, // null: started
     inputReplies: [] as any[], // taken first, one per POST /input
@@ -70,6 +69,7 @@ const world = (on: any, opts: { store?: Record<string, unknown>; inside?: boolea
     clock: null as any,
     bottomSteps: [] as any[],
     bottomSpawns: [] as any[],
+    reuseAgentId: null as string | null, // the engine runs a finished subagent again under its id
     bottomTools: [] as any[],
     modelCalls: [] as any[],
     leaseId: null as string | null,
@@ -220,7 +220,7 @@ const world = (on: any, opts: { store?: Record<string, unknown>; inside?: boolea
   })
   on('model.complete', ($: any, e: any) => {
     w.modelCalls.push(e)
-    return { value: fake.reviewReply }
+    return { value: null } // auto mode asks no model; modelCalls proves it
   })
   // The engine now consults this before every tool call; 'allow' lets the replayed tools run, as a person would.
   on('tool.check', () => ({ decision: (fake as any).checkDecision ?? 'allow' }))
@@ -242,7 +242,7 @@ const world = (on: any, opts: { store?: Record<string, unknown>; inside?: boolea
   on('agent.offer', () => ({ isOffered: true }))
   on('agent.spawn', ($: any, e: any) => {
     w.bottomSpawns.push(e)
-    return { model: e.model ?? SOL.model, agentId: nextAgentId() }
+    return { model: e.model ?? SOL.model, agentId: w.reuseAgentId ?? nextAgentId() }
   })
   on('turn.step', async function* ($: any, e: any, next: any) {
     w.bottomSteps.push(e)
@@ -680,15 +680,13 @@ test('a permission request reaches the user and the decision is posted back', { 
   expect(w.posts['/sessions'].at(-1)).toMatchObject({ autoReview: true })
   expect(toolChunk(s3.chunks).name).toBe('Bash')
   const allowed = await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s3.chunks).id, input: inputOf(s3.chunks) })
-  expect(w.modelCalls).toHaveLength(1)
-  expect(w.modelCalls[0].prompt).toContain('wants to run npm run build')
-  expect(w.modelCalls[0].prompt).toContain('run the build')
+  expect(w.modelCalls).toHaveLength(0) // no model is asked, so no Claude usage
   expect(w.posts['/sessions/fx-2/approvals/appr-2']).toEqual([{ decision: 'allow', by: 'auto mode' }])
   expect(allowed).toEqual({ result: { stdout: 'built in 2s', stderr: '', interrupted: false, noOutputExpected: false } })
 
   addToolResult(w, b.agentId, toolChunk(s3.chunks).id, 'built')
   const s4 = await step($, b.agentId, 1)
-  expect(textsOf(s4.chunks)[0]).toStartWith('Auto mode allowed GPT-6-Sol to run npm run build')
+  expect(textsOf(s4.chunks).some((t: string) => t.startsWith('Auto mode'))).toBe(false) // nothing to report
 })
 
 test('auto mode stays quiet when Claude Code\'s own check allows the action', { timeoutMs: 20000 }, async ($, on) => {
@@ -717,27 +715,28 @@ test('auto mode stays quiet when Claude Code\'s own check allows the action', { 
   expect(textsOf(s2.chunks).some((t: string) => t.startsWith('Auto mode'))).toBe(false)
 })
 
-test('auto mode review also accepts a bare-string model reply', { timeoutMs: 20000 }, async ($, on) => {
+test('auto mode lets what Claude Code\'s own check does not forbid go ahead, and blocks what it forbids', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)
-  w.fake.reviewReply = 'BLOCK\nrisky delete'
+  ;(w.fake as any).checkDecision = 'deny'
   w.fake.queue.push({
     events: [
       { type: 'command_started', seq: 1, itemId: 'cmd-9', command: 'rm -rf /tmp/x', summary: 'delete scratch' },
-      { type: 'approval_requested', seq: 2, approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' },
+      { type: 'approval_requested', seq: 2, approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '', tool: 'Bash', input: { command: 'rm -rf /tmp/x' } },
       { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Done.' },
     ],
     items: { 'cmd-9': { type: 'command_completed', status: 'declined' } },
-    approvals: [{ approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '' }],
+    approvals: [{ approvalId: 'appr-9', title: 'run rm -rf /tmp/x', detail: '', tool: 'Bash', input: { command: 'rm -rf /tmp/x' } }],
   })
   const b = await spawn($, 'clean scratch', 'auto')
   w.rows[b.agentId] = [{ role: 'user', text: 'clean scratch', toolUses: [] }]
   w.api[b.agentId] = []
 
   const s = await step($, b.agentId, 0)
-  const allowed = await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })
-  expect(w.posts['/sessions/fx-1/approvals/appr-9']).toEqual([{ decision: 'deny', reason: 'Auto mode blocked this: risky delete', by: 'auto mode' }])
-  expect(allowed).toEqual({ result: { stdout: '', stderr: 'Not run: permission was denied.', interrupted: false } })
+  await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s.chunks).id, input: inputOf(s.chunks) })
+  expect(w.modelCalls).toHaveLength(0)
+  expect(w.posts['/sessions/fx-1/approvals/appr-9']).toEqual([{ decision: 'deny', reason: 'Auto mode blocked this: Claude Code\'s permission check', by: 'auto mode' }])
+  ;(w.fake as any).checkDecision = undefined
 })
 
 test('a lease renewal picks up models the helper adds or drops mid-session', { timeoutMs: 20000 }, async ($, on) => {
@@ -998,34 +997,6 @@ test('closing a relay step early closes the Claude iterator', { timeoutMs: 20000
   await w.clock.settle()
   expect(closed).toBe(1)
   expect(interrupts(w, 'fx-1')).toEqual([])
-})
-
-test('the auto mode review sees the lead\'s latest follow-up, not only the first task', { timeoutMs: 10000 }, async ($, on) => {
-  const w = world(on)
-  await start($)
-  w.fake.queue.push({ events: [{ type: 'turn_completed', seq: 1, status: 'completed', finalText: 'Counted 40 files.' }], items: {}, approvals: [] })
-  const a = await spawn($, 'count the ts files', 'auto')
-  w.rows[a.agentId] = [{ role: 'user', text: 'count the ts files', toolUses: [] }]
-  w.api[a.agentId] = []
-  await step($, a.agentId, 0)
-
-  // A follow-up resumes the agent, which then asks to run a command for it.
-  w.rows[a.agentId].push({ role: 'user', text: 'now count the README lines', toolUses: [] })
-  const sess = w.sessions.get('fx-1')!
-  w.fake.inputReplies.push({ ok: true, inputId: 'in-f1', delivery: 'started' })
-  sess.events.push(
-    { type: 'user_input', seq: 2, inputId: 'in-f1', text: 'now count the README lines', sender: 'claude', delivery: 'started' },
-    { type: 'command_started', seq: 3, itemId: 'cmd-f1', command: 'wc -l README.md', summary: 'count README lines' },
-    { type: 'approval_requested', seq: 4, approvalId: 'appr-f1', title: 'run wc -l README.md', detail: '' },
-  )
-  sess.items = { 'cmd-f1': { type: 'command_completed', status: 'completed', exitCode: 0, output: '173 README.md' } }
-  sess.approvals = [{ approvalId: 'appr-f1', title: 'run wc -l README.md', detail: '' }]
-  const s1 = await step($, a.agentId, 1)
-  await toolCall($, a.agentId, { name: 'Bash', id: toolChunk(s1.chunks).id, input: inputOf(s1.chunks) })
-  const prompt = w.modelCalls.at(-1)?.prompt ?? ''
-  expect(prompt).toContain('<task>\ncount the ts files\n</task>')
-  expect(prompt).toContain('<latest_message>\nnow count the README lines\n</latest_message>')
-  expect(w.stored[`agent:${a.agentId}`].lastMessage).toBe('now count the README lines')
 })
 
 test('a changed relay handback is refused after the last try and the exact fallback is accepted', { timeoutMs: 20000 }, async ($, on) => {
@@ -2087,6 +2058,45 @@ test('a session BitFrost started itself is not given models by recovery', { time
   await w.clock.advance(15_000)
   expect((w.posts['/leases'] ?? []).length).toBe(before)
   expect(w.registered).toEqual([])
+})
+
+test('a subagent the engine spawns again under its id carries on in its app session', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  w.fake.queue.push({
+    events: [
+      { type: 'text', seq: 1, text: 'Noted.' },
+      { type: 'turn_completed', seq: 2, status: 'completed', finalText: 'Noted.' },
+    ],
+    items: {},
+    approvals: [],
+  })
+  const first = await spawn($, 'remember the word plum')
+  const agentId = first.agentId
+  w.rows[agentId] = [{ role: 'user', text: 'remember the word plum', toolUses: [] }]
+  w.api[agentId] = [{ role: 'user', content: [{ type: 'text', text: 'End with a SubagentHandback(...) call.' }] }]
+  const s1 = await step($, agentId, 0)
+  const handed = await closeOut($, w, agentId, s1, 1)
+  expect(stopChunk(handed.chunks).stopReason).toBe('end_turn')
+  expect(w.posts['/sessions']).toHaveLength(1)
+  const sessionId = w.stored[`agent:${agentId}`].sessionId
+
+  // SendMessage to the finished subagent: the engine spawns it again with the same id and a new message.
+  w.reuseAgentId = agentId
+  await spawn($, 'what was the word?')
+  w.rows[agentId].push({ role: 'user', text: 'what was the word?', toolUses: [] })
+  w.fake.inputReplies.push({ ok: true, inputId: 'in-w1', delivery: 'started' })
+  w.sessions.get(sessionId)!.events.push(
+    { type: 'user_input', seq: 3, inputId: 'in-w1', text: 'what was the word?', sender: 'claude', delivery: 'started' },
+    { type: 'text', seq: 4, text: 'plum.' },
+    { type: 'turn_completed', seq: 5, status: 'completed', finalText: 'plum.' },
+  )
+  // A second app session would wait for events that never come, so give up rather than hang.
+  const second = await Promise.race([step($, agentId, 2), new Promise((resolve) => setTimeout(() => resolve('hung'), 4000))])
+  expect(second).not.toBe('hung')
+  expect(w.posts['/sessions']).toHaveLength(1) // no second app session
+  expect(inputs(w, sessionId).map((i: any) => i.text)).toEqual(['what was the word?'])
+  w.reuseAgentId = null
 })
 
 test('a connect that fails at session start is tried again', { timeoutMs: 20000 }, async ($, on) => {
