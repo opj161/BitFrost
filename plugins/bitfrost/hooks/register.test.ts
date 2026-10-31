@@ -628,40 +628,62 @@ test('a search the host has no tool for is replayed as the rg command it amounts
   }
 })
 
-test('a permission request reaches the user and the decision is posted back', { timeoutMs: 20000 }, async ($, on) => {
+test('a permission request in the default mode is decided without asking anyone', { timeoutMs: 20000 }, async ($, on) => {
   const w = world(on)
   await start($)
+  ;(w.fake as any).checkDecision = 'ask' // no rule decides; the default mode would have put it to the user
 
   w.fake.queue.push({
     events: [
       { type: 'text', seq: 1, text: 'I will run the build.' },
       { type: 'command_started', seq: 2, itemId: 'cmd-1', command: 'npm run build', summary: 'build the project' },
-      { type: 'approval_requested', seq: 3, approvalId: 'appr-1', title: 'run npm run build', detail: 'writes to node_modules' },
-      { type: 'turn_completed', seq: 4, status: 'completed', finalText: 'Build skipped.' },
+      { type: 'approval_requested', seq: 3, approvalId: 'appr-1', title: 'run npm run build', detail: 'writes to node_modules', tool: 'Bash', input: { command: 'npm run build' } },
+      { type: 'turn_completed', seq: 4, status: 'completed', finalText: 'Built.' },
     ],
-    items: { 'cmd-1': { type: 'command_completed', status: 'declined' } },
-    approvals: [{ approvalId: 'appr-1', title: 'run npm run build', detail: 'writes to node_modules' }],
+    items: { 'cmd-1': { type: 'command_completed', status: 'completed', exitCode: 0, output: 'built in 2s' } },
+    approvals: [{ approvalId: 'appr-1', title: 'run npm run build', detail: 'writes to node_modules', tool: 'Bash', input: { command: 'npm run build' } }],
   })
-  const a = await spawn($, 'run the build')
+  const a = await spawn($, 'run the build') // permissionMode 'default'
   w.rows[a.agentId] = [{ role: 'user', text: 'run the build', toolUses: [] }]
   w.api[a.agentId] = []
 
   const s1 = await step($, a.agentId, 0)
   expect(toolChunk(s1.chunks).name).toBe('Bash')
-  expect(inputOf(s1.chunks)).toEqual({ command: 'npm run build', description: 'build the project' })
+  const ran = await toolCall($, a.agentId, { name: 'Bash', id: toolChunk(s1.chunks).id, input: inputOf(s1.chunks) })
+  expect(w.asks).toHaveLength(0) // nobody was asked, so a background run is never stopped
+  expect(w.modelCalls).toHaveLength(0)
+  expect(w.posts['/sessions/fx-1/approvals/appr-1']).toEqual([{ decision: 'allow', by: 'auto mode' }])
+  expect(ran).toEqual({ result: { stdout: 'built in 2s', stderr: '', interrupted: false, noOutputExpected: false } })
+  ;(w.fake as any).checkDecision = undefined
+})
 
+test('a permission request that Claude Code\'s rules deny is denied in the default mode too', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
+  ;(w.fake as any).checkDecision = 'deny'
+  w.fake.queue.push({
+    events: [
+      { type: 'command_started', seq: 1, itemId: 'cmd-7', command: 'rm -rf build', summary: 'delete build' },
+      { type: 'approval_requested', seq: 2, approvalId: 'appr-7', title: 'run rm -rf build', detail: '', tool: 'Bash', input: { command: 'rm -rf build' } },
+      { type: 'turn_completed', seq: 3, status: 'completed', finalText: 'Not deleted.' },
+    ],
+    items: { 'cmd-7': { type: 'command_completed', status: 'declined' } },
+    approvals: [{ approvalId: 'appr-7', title: 'run rm -rf build', detail: '', tool: 'Bash', input: { command: 'rm -rf build' } }],
+  })
+  const a = await spawn($, 'clean')
+  w.rows[a.agentId] = [{ role: 'user', text: 'clean', toolUses: [] }]
+  w.api[a.agentId] = []
+  const s1 = await step($, a.agentId, 0)
   const denied = await toolCall($, a.agentId, { name: 'Bash', id: toolChunk(s1.chunks).id, input: inputOf(s1.chunks) })
-  expect(w.asks).toHaveLength(1)
-  expect(w.asks[0][0].question).toContain('GPT-6-Sol (a bitfrost subagent) wants to run npm run build')
-  expect(w.asks[0][0].header).toBe('Permission')
-  expect(w.asks[0][0].options.map((o: any) => o.label)).toEqual(['Allow once', 'Allow for this task', 'Switch to auto', 'Deny'])
-  expect(w.posts['/sessions/fx-1/approvals/appr-1']).toEqual([{ decision: 'deny', by: 'user' }])
+  expect(w.asks).toHaveLength(0)
+  expect(w.posts['/sessions/fx-1/approvals/appr-7']).toEqual([{ decision: 'deny', reason: 'Auto mode blocked this: Claude Code\'s permission check', by: 'auto mode' }])
   expect(denied).toEqual({ result: { stdout: '', stderr: 'Not run: permission was denied.', interrupted: false } })
+  ;(w.fake as any).checkDecision = undefined
+})
 
-  addToolResult(w, a.agentId, toolChunk(s1.chunks).id, 'not run')
-  const s2 = await step($, a.agentId, 1)
-  expect(textsOf(s2.chunks)[0]).toStartWith('Asked you: may GPT-6-Sol run npm run build?')
-  expect(stopChunk(s2.chunks).stopReason).toBe('end_turn')
+test('a permission request in auto mode is allowed and nothing is reported', { timeoutMs: 20000 }, async ($, on) => {
+  const w = world(on)
+  await start($)
 
   w.fake.queue.push({
     events: [
@@ -681,7 +703,7 @@ test('a permission request reaches the user and the decision is posted back', { 
   expect(toolChunk(s3.chunks).name).toBe('Bash')
   const allowed = await toolCall($, b.agentId, { name: 'Bash', id: toolChunk(s3.chunks).id, input: inputOf(s3.chunks) })
   expect(w.modelCalls).toHaveLength(0) // no model is asked, so no Claude usage
-  expect(w.posts['/sessions/fx-2/approvals/appr-2']).toEqual([{ decision: 'allow', by: 'auto mode' }])
+  expect(w.posts['/sessions/fx-1/approvals/appr-2']).toEqual([{ decision: 'allow', by: 'auto mode' }])
   expect(allowed).toEqual({ result: { stdout: 'built in 2s', stderr: '', interrupted: false, noOutputExpected: false } })
 
   addToolResult(w, b.agentId, toolChunk(s3.chunks).id, 'built')
@@ -2183,7 +2205,7 @@ test('status says when a subagent is blocked on a permission or a question', { t
   expect(line).not.toContain('running Bash')
   const detail = (await call({ agent: agentId })).result
   expect(detail).toContain('Blocked: waiting for permission to run npm test')
-  expect(detail).toContain('The user is being asked')
+  expect(detail).toContain('It carries on once that is answered')
 })
 
 test('a subagent type with the name an agent had before is still run, under its short name', { timeoutMs: 20000 }, async ($, on) => {

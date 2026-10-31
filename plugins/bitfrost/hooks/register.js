@@ -382,13 +382,6 @@ async function namedInLatestMessage($) {
   return found
 }
 
-// Permission requests go to the user, never to the model that spawned the subagent.
-// No answer means Deny. In auto mode Claude Code's own permission rules decide instead (see autoVerdict).
-const ALLOW_ONCE = 'Allow once'
-const ALLOW_SESSION = 'Allow for this task'
-const SWITCH_AUTO = 'Switch to auto'
-const DENY = 'Deny'
-
 const keepAliveChunk = (index) => ({ kind: 'thinking', index, text: '' })
 
 // Claude Code stops a subagent whose context passes 200k for an unknown model.
@@ -409,61 +402,10 @@ function capUsage(u) {
   return { ...u, input_tokens: input, cache_read_input_tokens: cacheRead, cache_creation_input_tokens: Math.min(u.cache_creation_input_tokens, room), output_tokens: output }
 }
 
-// Waits for a slow answer while sending keepalive chunks and pinging the helper,
-// so neither side drops the subagent.
-async function* keepAlive($, st, promise, nextIndex, signal) {
-  let settled = false
-  const done = promise.then(
-    () => (settled = true),
-    () => (settled = true),
-  )
-  while (!settled) {
-    if (signal?.aborted) throw new Error('stopped')
-    await Promise.race([done, $.clock.sleep(KEEPALIVE_MS, signal ? { signal } : undefined)])
-    if (settled) break
-    if (signal?.aborted) throw new Error('stopped')
-    yield keepAliveChunk(nextIndex())
-    try {
-      await daemon($, 'GET', `/sessions/${st.sessionId}`)
-    } catch {}
-  }
-  return await promise
-}
-
-// Runs a keepAlive generator where streaming isn't possible, dropping its chunks.
-async function drain(gen) {
-  let r
-  while (!(r = await gen.next()).done);
-  return r.value
-}
-
-async function* askUser($, st, approval, nextIndex, signal, why = '') {
-  const question = `${why}${st.def.displayName} (a bitfrost subagent) wants to ${approval.title}.${approval.detail ? `\n${approval.detail}` : ''}\nAllow it?`
-  // Already in auto mode after a failed review, so don't offer it again.
-  const options = st.auto ? [ALLOW_ONCE, ALLOW_SESSION, DENY] : [ALLOW_ONCE, ALLOW_SESSION, SWITCH_AUTO, DENY]
-  let answer = null // stays null if dismissed or stopped
-  try {
-    answer = yield* keepAlive($, st, $.ui.ask(question, { header: 'Permission', options }), nextIndex, signal)
-  } catch {}
-  if (answer === SWITCH_AUTO) {
-    st.auto = true
-    try {
-      await daemon($, 'POST', `/sessions/${st.sessionId}/auto`)
-    } catch {}
-    const r = yield* decideApproval($, st, approval)
-    return { decision: r.decision, line: `You switched ${st.def.displayName} to auto mode.${r.line ? ` ${r.line}` : ''}` }
-  }
-  const decision = answer === ALLOW_ONCE ? 'allow' : answer === ALLOW_SESSION ? 'allow_session' : 'deny'
-  try {
-    await daemon($, 'POST', `/sessions/${st.sessionId}/approvals/${approval.approvalId}`, { decision, by: 'user' })
-  } catch {}
-  const said = answer === null ? 'No answer, so it was denied.' : `You answered: ${decision === 'deny' ? 'Deny' : answer}.`
-  return { decision, line: `Asked you: may ${st.def.displayName} ${approval.title}? ${said}` }
-}
-
-// In auto mode Claude Code's own permission rules decide, and what they leave open goes ahead: choosing auto
-// mode is how the user lets subagents work on their own. No model is asked, so it costs no Claude usage,
-// and nobody is interrupted.
+// A subagent's permission requests are decided here, in every mode, and never wait for a person: a subagent
+// often runs in the background with nobody at the prompt, and a request that blocks stops the run. Claude Code's
+// own permission rules decide (a deny rule is a deny); what they leave open goes ahead, as the apps' own gates
+// already ask only about what they think needs it. No model is asked, so it costs no Claude usage.
 async function autoVerdict($, approval) {
   if (approval.tool) {
     try {
@@ -474,7 +416,7 @@ async function autoVerdict($, approval) {
   return { decision: 'allow', routine: true }
 }
 
-async function* decideApproval($, st, approval) {
+async function decideApproval($, st, approval) {
   const verdict = await autoVerdict($, approval)
   const reason = verdict.decision === 'deny' ? `Auto mode blocked this: ${verdict.why}` : undefined
   try {
@@ -483,13 +425,13 @@ async function* decideApproval($, st, approval) {
   return { decision: verdict.decision, line: verdict.routine ? null : `Auto mode blocked ${st.def.displayName} from ${approval.title} (${verdict.why}).` }
 }
 
-async function* answerApprovals($, st, nextIndex, signal) {
+async function answerApprovals($, st) {
   const { approvals } = await daemon($, 'GET', `/sessions/${st.sessionId}/approvals`)
   const lines = []
   for (const a of approvals) {
     if (st.asked.has(a.approvalId)) continue
     st.asked.add(a.approvalId)
-    const r = st.auto ? yield* decideApproval($, st, a) : yield* askUser($, st, a, nextIndex, signal)
+    const r = await decideApproval($, st, a)
     if (r.line) lines.push(r.line)
   }
   return lines
@@ -514,8 +456,7 @@ async function agentDir($) {
   return cwd && cwd.startsWith(`${root}/.claude/worktrees/`) ? cwd : root
 }
 
-// Subagent questions go to Claude in auto mode, else straight to the user.
-const JUDGMENT = 'Use your best judgment'
+// A subagent's question pauses it and goes to Claude, in every mode (see the question_asked branch).
 
 function formatQuestions(questions) {
   return questions
@@ -524,30 +465,6 @@ function formatQuestions(questions) {
       return `${questions.length > 1 ? `${i + 1}. ` : ''}${q.header ? `${q.header}: ` : ''}${q.question}${options ? `\n${options}` : ''}`
     })
     .join('\n')
-}
-
-async function* askUserQuestions($, st, asked, nextIndex, signal) {
-  const answers = {}
-  const lines = []
-  for (const q of asked.questions) {
-    if (q.secret) {
-      lines.push(`${st.def.displayName} asked for something secret (${q.question}); bitfrost doesn't pass secrets on.`)
-      continue
-    }
-    const labels = q.options.slice(0, 4).map((o) => o.label)
-    const options = labels.length >= 2 ? labels : [...labels, JUDGMENT].slice(0, 4)
-    const question = `${st.def.displayName} (a bitfrost subagent) asks: ${q.question}`.replace(/[?.!]*\s*$/, '?')
-    let answer = null
-    try {
-      answer = yield* keepAlive($, st, $.ui.ask(question, { header: (q.header || 'Question').slice(0, 12), options }), nextIndex, signal)
-    } catch {}
-    if (answer && answer !== JUDGMENT) answers[q.id] = [answer]
-    lines.push(`${st.def.displayName} asked: ${q.question} You answered: ${answer ?? 'nothing (it will use its own judgment)'}.`)
-  }
-  try {
-    await daemon($, 'POST', `/sessions/${st.sessionId}/questions/${asked.questionId}`, { answers })
-  } catch {}
-  return lines
 }
 
 // "effort: high" on the prompt's first line picks the reasoning effort.
@@ -1231,7 +1148,7 @@ function summaryText(a, s) {
   const st = stateSince(s)
   lines.push(`State: ${st.label}${st.ms != null ? ` for ${dur(st.ms)}` : ''}${ss.title ? `. Task: ${clip(ss.title, 160)}` : ''}`)
   const blocked = waitingLine(s)
-  if (blocked) lines.push(`Blocked: ${blocked}. The user is being asked; it carries on once they answer.`)
+  if (blocked) lines.push(`Blocked: ${blocked}. It carries on once that is answered.`)
   if (s.live?.activity || s.live?.partialText) lines.push(`Now: ${clip(s.live.activity, 160)}${s.live.partialText ? ` "${clip(s.live.partialText, 300)}"` : ''}`)
   if (s.activeTool) lines.push(`Running: ${s.activeTool.name} ${clip(s.activeTool.summary, 200)} (for ${dur(Date.now() - msOf(s.activeTool.startedAt))})`)
   if (s.recentTools?.length) lines.push(`Recent tools:\n${s.recentTools.map((t) => `  ${t.name} [${t.status}] ${clip(t.summary, 160)}`).join('\n')}`)
@@ -2184,11 +2101,7 @@ async function* replayStep($, e, next, st, ctl) {
       } else if (ev.type === 'turn_started') {
         st.interruptedBy = null
       } else if (ev.type === 'question_asked') {
-        if (!PARENT_AUTO_MODES.has(st.parentMode ?? '')) {
-          for (const line of yield* askUserQuestions($, st, ev, nextIndex, next.signal)) yield say(line)
-          continue
-        }
-        // Auto mode: pause the agent and hand the question to Claude.
+        // Pause the agent and hand the question to Claude, in every mode: a person may not be there to answer.
         await daemon($, 'POST', `/sessions/${st.sessionId}/questions/${ev.questionId}`, { defer: true })
         while (!next.signal.aborted) {
           // Drain the paused turn so its end isn't read as the next turn's.
@@ -2210,7 +2123,7 @@ async function* replayStep($, e, next, st, ctl) {
         const did = ev.decision === 'approved' ? 'allowed' : ev.decision === 'denied' ? 'blocked' : `could not decide (${ev.decision}) on`
         yield say(`${st.def.displayName}'s auto review ${did} ${ev.action}${ev.reason ? `: ${ev.reason}` : '.'}`)
       } else if (ev.type === 'approval_requested') {
-        for (const line of yield* answerApprovals($, st, nextIndex, next.signal)) yield say(line)
+        for (const line of await answerApprovals($, st)) yield say(line)
       } else if (ev.type === 'tool') {
         yield say(`⚙ ${ev.name}(${JSON.stringify(ev.input ?? {}).slice(0, 200)})`)
       } else if (ev.type === 'turn_completed' && ev.continues) {
@@ -2275,7 +2188,7 @@ async function waitForItem($, st, p, next) {
     }
     let event
     try {
-      const asked = await drain(answerApprovals($, st, () => 0, next.signal))
+      const asked = await answerApprovals($, st)
       if (asked.length) st.pendingLines = [...(st.pendingLines ?? []), ...asked]
       ;({ event } = await daemon($, 'GET', `/sessions/${st.sessionId}/items/${p.itemId}?waitMs=${POLL_MS}`))
       failures = 0

@@ -31,7 +31,7 @@ BitFrost finds ZCode in `/Applications`, `~/Applications`, or `/opt/ZCode`, and
 through a `zcode` executable on PATH. A custom `providers.zcode.dir` or
 `BITFROST_ZCODE_DIR` can name the Linux install directory or the macOS `.app` bundle.
 
-Then run `bitfrost setup zcode` once. Without it, GLM can't ask you for permission and is refused instead.
+Then run `bitfrost setup zcode` once. Without it, GLM can't ask for permission and is refused instead.
 
 ### Grok Build
 
@@ -220,7 +220,7 @@ From the subagent runs BitFrost has recorded. The Models page shows usage for To
 
 ### Who answers a subagent's permission requests?
 
-In normal mode, you decide; no answer means Deny. In auto mode, nobody is asked: your Claude Code permission rules decide, and anything they don't forbid goes ahead. No Claude model is called for this.
+Nobody is asked, in any mode, because a subagent often runs in the background with no one at the prompt. Your Claude Code permission rules decide: a deny rule blocks the action, and anything else goes ahead. No Claude model is called for this. A question the subagent asks pauses it and goes to Claude, which answers it or asks you.
 
 ### What is official handback?
 

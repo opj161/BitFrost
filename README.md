@@ -30,9 +30,7 @@ Works in Claude Code (CLI and desktop app), on Linux and macOS 12.3+.
 </p>
 <br />
 
-Subagent permission requests and questions come straight to you.
-
-In auto mode, Claude answers subagent questions and permission requests go ahead unless one of your Claude Code permission rules forbids them. No extra Claude call is made.
+Subagents run without waiting for you, in any mode: a permission request goes ahead unless one of your Claude Code permission rules forbids it, and a question the subagent asks pauses it and goes to Claude to answer. No extra Claude call is made.
 
 <p align="center">
   <img src="assets/screen2.png" alt="A GPT-6.1 Sol subagent asking the user which language to use" width="768">
@@ -71,7 +69,7 @@ Node.js 23.6+, Claude Code, and at least one [supported coding app](#supported-h
    bitfrost setup zcode
    ```
 
-   Without it, GLM can't ask you for permission and is refused instead.
+   Without it, GLM can't ask for permission and is refused instead.
 
 4. Start a new Claude session. New models also only show up in a new session.
 
@@ -151,7 +149,7 @@ Ask Claude for a model by name:
 
 Claude is told at the start of each session which models you have and what they are called ("sol6", "glm", ...). If none can be offered, the session tells you why.
 
-When a subagent asks for permission, the request comes to you, not Claude. No answer means Deny. In auto mode (or accept-edits or bypass), nobody is asked: your Claude Code permission rules decide, and anything they don't forbid goes ahead.
+When a subagent asks for permission, nobody is asked, in any mode: your Claude Code permission rules decide, and anything they don't forbid goes ahead. A deny rule always wins.
 
 While a subagent waits for your answer, Claude's `status` tool shows it as waiting for permission, so a quiet agent isn't mistaken for a busy one.
 
